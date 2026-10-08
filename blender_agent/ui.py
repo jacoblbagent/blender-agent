@@ -202,7 +202,7 @@ def _draw_panel(layout, context, transcript_limit=None):
         box.prop(prefs, "api_key", text="")
         box.operator("blender_agent.open_key_page", icon="URL")
 
-    col.prop(wm, "agent_input", text="")
+    col.prop(wm, "agent_input", text="Ask", icon="TEXT")
     row = col.row(align=True)
     row.prop(wm, "agent_show_more", text="History", toggle=True)
     row.prop(wm, "agent_show_full", text="Full Output", toggle=True)
