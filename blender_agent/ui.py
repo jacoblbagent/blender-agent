@@ -1,5 +1,7 @@
 """Blender UI: the Agent sidebar panel, chat rendering and operators."""
 
+import os
+import re
 import threading
 import time
 import webbrowser
@@ -35,6 +37,36 @@ def redraw_all(force=False):
     except Exception:  # noqa: BLE001 - redraw must never raise
         pass
 
+
+
+def icon_problems():
+    """Validate every icon literal used by this add-on against Blender's enum.
+
+    An unknown icon raises inside draw(), and Blender then shows a *partially
+    drawn* panel instead of an error - a silent, confusing failure. Checked here
+    and asserted by the test suite.
+    """
+    try:
+        valid = {i.identifier for i in bpy.types.UILayout.bl_rna.functions["label"]
+                 .parameters["icon"].enum_items}
+    except Exception:  # noqa: BLE001
+        return []
+    here = os.path.dirname(os.path.abspath(__file__))
+    problems = []
+    for fname in ("ui.py", "preferences.py"):
+        try:
+            with open(os.path.join(here, fname), encoding="utf-8") as fh:
+                lines = fh.readlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, 1):
+            if "icon=" not in line:
+                continue
+            for literal in re.findall(r'"([A-Z][A-Z0-9_]*)"', line):
+                if literal not in valid:
+                    problems.append("%s:%d icon %r is not a Blender icon" %
+                                    (fname, number, literal))
+    return problems
 
 def _wrap(text, width=54, max_lines=None):
     lines = []
@@ -126,7 +158,7 @@ def _draw_transcript(layout, wm, limit):
         box.separator(factor=0.4)
 
 
-def _draw_panel(layout, context, compact=False):
+def _draw_panel(layout, context, transcript_limit=None):
     wm = context.window_manager
     prefs = _prefs(context)
 
@@ -134,6 +166,11 @@ def _draw_panel(layout, context, compact=False):
     head.label(text=_status_line())
     if SESSION.usage["total_tokens"]:
         head.label(text="%s tok" % SESSION.usage["total_tokens"])
+    model_row = layout.row(align=True)
+    model_row.label(text=prefs.resolved_model() or "no model selected",
+                    icon="OUTLINER_OB_EMPTY")
+    model_row.label(text="key %s" % ("set" if (prefs.api_key or "").strip() else "missing"),
+                    icon="CHECKMARK" if (prefs.api_key or "").strip() else "ERROR")
 
     row = layout.row(align=True)
     row.scale_y = 1.5
@@ -154,7 +191,8 @@ def _draw_panel(layout, context, compact=False):
         r.operator("blender_agent.approve_code", icon="CHECKMARK")
         r.operator("blender_agent.deny_code", icon="CANCEL")
 
-    _draw_transcript(layout, wm, 12 if not wm.agent_show_more else 40)
+    limit = transcript_limit or (12 if not wm.agent_show_more else 40)
+    _draw_transcript(layout, wm, limit)
 
     col = layout.column(align=True)
     if not (prefs.api_key or "").strip():
@@ -173,12 +211,12 @@ def _draw_panel(layout, context, compact=False):
     from . import bridge as bridge_mod
     if bridge_mod.is_running():
         remote = col.row(align=True)
-        remote.label(text="Remote %s" % bridge_mod.url(), icon="NETWORK")
+        remote.label(text="Remote %s" % bridge_mod.url(), icon="INTERNET")
         remote.operator("blender_agent.bridge_copy", text="", icon="COPY_ID").what = "url"
         remote.operator("blender_agent.bridge_copy", text="", icon="KEYINGSET").what = "token"
         remote.operator("blender_agent.bridge_toggle", text="", icon="PAUSE")
     else:
-        col.operator("blender_agent.bridge_toggle", text="Serve On Tailnet", icon="NETWORK")
+        col.operator("blender_agent.bridge_toggle", text="Serve On Tailnet", icon="INTERNET")
 
 
 class BLENDER_AGENT_PT_agent(Panel):
@@ -442,6 +480,21 @@ class BLENDER_AGENT_OT_add_workspace(Operator):
         return {"FINISHED"} if ok else {"CANCELLED"}
 
 
+class BLENDER_AGENT_OT_open_panel(Operator):
+    bl_idname = "blender_agent.open_panel"
+    bl_label = "Blender Agent Panel"
+    bl_description = "Open the Blender Agent chat panel as a floating window"
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=640)
+
+    def draw(self, context):
+        _draw_panel(self.layout, context, transcript_limit=5)
+
+    def execute(self, context):
+        return {"FINISHED"}
+
+
 class BLENDER_AGENT_OT_quick_ask(Operator):
     bl_idname = "blender_agent.quick_ask"
     bl_label = "Ask Blender Agent"
@@ -554,6 +607,7 @@ classes = (
     BLENDER_AGENT_OT_open_key_page, BLENDER_AGENT_OT_model_browser,
     BLENDER_AGENT_OT_set_model, BLENDER_AGENT_OT_add_workspace,
     BLENDER_AGENT_OT_send_selection, BLENDER_AGENT_OT_quick_ask,
+    BLENDER_AGENT_OT_open_panel,
     BLENDER_AGENT_OT_bridge_toggle, BLENDER_AGENT_OT_bridge_token,
     BLENDER_AGENT_OT_bridge_copy,
 )
@@ -561,8 +615,9 @@ classes = (
 
 def _menu_object(self, context):
     self.layout.separator()
-    self.layout.operator("blender_agent.send_selection", icon="OUTLINER_OB_LIGHT")
+    self.layout.operator("blender_agent.open_panel", icon="OUTLINER_OB_LIGHT")
     self.layout.operator("blender_agent.quick_ask", icon="TRIA_RIGHT")
+    self.layout.operator("blender_agent.send_selection", icon="SELECT_SET")
 
 
 def _maybe_add_workspace():

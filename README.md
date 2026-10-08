@@ -44,9 +44,11 @@ Then in Blender: 3D viewport → `N` → **Agent** tab.
    browser and a free-text custom model id are both available.
 3. Type what you want and press the play button.
 
-`Alt`-free extras: *Object → Send Selection To Blender Agent* puts the selection's
-details into the prompt, *Object → Ask Blender Agent* opens a quick-ask popup that
-works without the sidebar, and **Add Agent Workspace** builds a workspace tuned for
+`Alt`-free extras: *Object → Blender Agent Panel* opens the whole chat as a floating
+window (the same panel, so it works without touching the sidebar — Blender does not
+let add-ons select a sidebar tab from Python), *Object → Ask Blender Agent* is a
+one-box quick ask, *Object → Send Selection To Blender Agent* puts the selection's
+details into the prompt, and **Add Agent Workspace** builds a workspace tuned for
 talking to the agent (sidebar open, material shading).
 
 ## What the agent can do

@@ -186,7 +186,7 @@ class BlenderAgentPreferences(bpy.types.AddonPreferences):
         box.prop(self, "system_prompt", text="")
 
         box = col.box()
-        box.label(text="Remote (Tailnet)", icon="NETWORK")
+        box.label(text="Remote (Tailnet)", icon="INTERNET")
         b = box.column(align=True)
         from . import bridge as bridge_mod
         if bridge_mod.is_running():

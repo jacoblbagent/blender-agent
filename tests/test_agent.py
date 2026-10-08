@@ -66,8 +66,12 @@ def main():
     check("operator send", hasattr(bpy.ops.blender_agent, "send"))
     check("operator set_model", hasattr(bpy.ops.blender_agent, "set_model"))
     check("operator quick_ask", hasattr(bpy.ops.blender_agent, "quick_ask"))
+    check("operator open_panel", hasattr(bpy.ops.blender_agent, "open_panel"))
     check("operator add_workspace", hasattr(bpy.ops.blender_agent, "add_workspace"))
     check("preferences registered", "blender_agent" in bpy.context.preferences.addons)
+    from blender_agent import ui as ui_mod
+    icon_bad = ui_mod.icon_problems()
+    check("every UI icon exists in Blender", not icon_bad, icon_bad[:5])
     prefs = bpy.context.preferences.addons["blender_agent"].preferences
     from blender_agent import workspace as ws_mod
     before_ws = sorted(w.name for w in bpy.data.workspaces)
