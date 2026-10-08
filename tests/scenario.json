@@ -1,0 +1,13 @@
+[
+  {"tool_calls": [{"name": "create_objects", "arguments": {"objects": [
+      {"type": "cube", "name": "LoopCube", "location": [0, 0, 1], "size": 2,
+       "material": {"name": "LoopRed", "Base Color": [0.8, 0.05, 0.05], "Roughness": 0.35}}]}}]},
+  {"content": "Built LoopCube: a 2 m red cube sitting 1 m up. Anything else?"},
+
+  {"tool_calls": [{"name": "render_preview_and_view", "arguments": {"width": 160}}]},
+  {"content": "Reading the render: the object reads as a mid-grey form, lighting is flat."},
+
+  {"error": {"code": 402, "message": "Insufficient credits for this model."}},
+
+  {"delay": 6, "content": "this response should never arrive because the user cancels"}
+]

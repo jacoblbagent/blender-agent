@@ -1,0 +1,16 @@
+diff --git a/source/blender/blenloader/intern/versioning_userdef.cc b/source/blender/blenloader/intern/versioning_userdef.cc
+index 3c32936..ffebbaf 100644
+--- a/source/blender/blenloader/intern/versioning_userdef.cc
++++ b/source/blender/blenloader/intern/versioning_userdef.cc
+@@ -1807,6 +1807,11 @@ void blo_do_versions_userdef(UserDef *userdef)
+   for (bTheme &btheme : userdef->themes) {
+     do_versions_theme(userdef, &btheme);
+   }
++
++  /* Blender Agent fork: the agent add-on is bundled in `addons_core` and is
++   * enabled by default, so a fresh install starts with the agent available. */
++  BKE_addon_ensure(&userdef->addons, "blender_agent");
++
+ #undef USER_VERSION_ATLEAST
+ }
+ 

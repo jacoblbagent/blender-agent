@@ -1,0 +1,10 @@
+# nothing here but source: the vendored Blender tree is downloaded by tools/fork_blender.sh
+vendor/
+build/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.blend1
+*.png
+!docs/*.png

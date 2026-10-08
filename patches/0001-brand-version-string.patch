@@ -1,0 +1,23 @@
+diff --git a/source/blender/blenkernel/intern/blender.cc b/source/blender/blenkernel/intern/blender.cc
+index f259075..8513e8e 100644
+--- a/source/blender/blenkernel/intern/blender.cc
++++ b/source/blender/blenkernel/intern/blender.cc
+@@ -126,13 +126,17 @@ static void blender_version_init()
+   }
+ 
+   const char *version_suffix = BKE_blender_version_is_lts() ? " LTS" : "";
++  /* Blender Agent fork branding: surfaced in the splash, About box and
++   * `--version`, e.g. "5.2.2 LTS Agent". */
++  const char *version_fork = " Agent";
+ 
+   SNPRINTF_UTF8(blender_version_string,
+-                "%d.%01d.%d%s%s",
++                "%d.%01d.%d%s%s%s",
+                 BLENDER_VERSION / 100,
+                 BLENDER_VERSION % 100,
+                 BLENDER_VERSION_PATCH,
+                 version_suffix,
++                version_fork,
+                 version_cycle);
+ 
+   SNPRINTF_UTF8(blender_version_string_compact,
