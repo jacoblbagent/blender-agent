@@ -259,10 +259,19 @@ def stream_chat(prefs, messages, tools=None, cancel_flag=None, abort_box=None):
 
 def _http_error(r):
     detail = ""
+    provider = ""
     try:
         j = r.json()
         err = j.get("error") or {}
         detail = err.get("message") or json.dumps(j)[:300]
+        meta = err.get("metadata") or {}
+        provider = meta.get("provider_name") or ""
+        # OpenRouter hides the upstream message here; without it a 400 is opaque.
+        raw = meta.get("raw") or meta.get("raw_body") or meta.get("error")
+        if isinstance(raw, str) and raw.strip():
+            detail = "%s | upstream: %s" % (detail, raw.strip()[:300])
+        elif isinstance(raw, dict):
+            detail = "%s | upstream: %s" % (detail, json.dumps(raw)[:300])
     except ValueError:
         detail = (r.text or "")[:300]
     hint = ""
@@ -274,7 +283,10 @@ def _http_error(r):
         hint = " (unknown model id?)"
     elif r.status_code == 429:
         hint = " (rate limited)"
-    return OpenRouterError("HTTP %s%s: %s" % (r.status_code, hint, detail))
+    elif r.status_code == 400:
+        hint = " (the provider rejected the request - often a tool schema it does not accept)"
+    who = " [%s]" % provider if provider else ""
+    return OpenRouterError("HTTP %s%s%s: %s" % (r.status_code, hint, who, detail))
 
 
 def _stream_once(requests, url, headers, payload, prefs, cancel_flag, abort_box=None):

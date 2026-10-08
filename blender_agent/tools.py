@@ -10,6 +10,7 @@ import io
 import math
 import os
 import random
+import re
 import sys
 import traceback
 
@@ -138,10 +139,50 @@ def _activate(objs, active=None):
         bpy.context.view_layer.objects.active = active or objs[0]
 
 
+def _spot(value):
+    """Resolve a look_at / target argument.
+
+    Accepts an object name, "x,y,z", "x, y, z", a Vector, or [x, y, z] - the tool
+    schemas declare this as a string, so both spellings must work.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        obj = bpy.data.objects.get(text)
+        if obj is not None:
+            return obj
+        parts = [p for p in re.split(r"[,;\s]+", text) if p]
+        if len(parts) >= 3:
+            try:
+                return Vector([float(p) for p in parts[:3]])
+            except ValueError:
+                obj = bpy.data.objects.get(parts[0])
+                if obj is not None:
+                    return obj
+        return None
+    if isinstance(value, (list, tuple)):
+        return Vector(_vec3(value))
+    return value
+
+
+def _spot_point(value):
+    """World-space point for a look_at argument (object centre or coordinates)."""
+    spot = _spot(value)
+    if spot is None:
+        return None
+    if hasattr(spot, "matrix_world"):
+        return Vector(spot.matrix_world.translation)
+    return Vector(spot)
+
+
 def _look_at(obj, target, roll=0.0):
-    tgt = Vector(_vec3(target))
-    loc = obj.matrix_world.translation
-    direction = loc - tgt
+    point = _spot_point(target)
+    if point is None:
+        return
+    direction = obj.matrix_world.translation - Vector(point)
     if direction.length < 1e-6:
         return
     obj.rotation_mode = "XYZ"
@@ -340,12 +381,18 @@ def t_create_objects(args):
             obj.rotation_euler = rot
             obj.scale = scale
         elif kind in ("mesh", "custom_mesh"):
-            verts = [tuple(_vec3(v)) for v in (spec.get("vertices") or [])]
-            faces = [tuple(int(i) for i in f) for f in (spec.get("faces") or [])]
+            raw_verts = spec.get("mesh_vertices")
+            if raw_verts is None and isinstance(spec.get("vertices"), (list, tuple)):
+                raw_verts = spec.get("vertices")
+            verts = [tuple(_vec3(v)) for v in (raw_verts or [])]
+            raw_faces = spec.get("mesh_faces") or spec.get("faces") or []
+            faces = [tuple(int(i) for i in f) for f in raw_faces]
+            raw_edges = spec.get("mesh_edges") or spec.get("edges") or []
+            edges = [tuple(int(i) for i in e) for e in raw_edges]
             if not verts:
-                raise ValueError("custom mesh needs vertices")
+                raise ValueError("custom mesh needs mesh_vertices")
             me = bpy.data.meshes.new(name or "Mesh")
-            me.from_pydata(verts, [tuple(int(i) for i in e) for e in (spec.get("edges") or [])], faces)
+            me.from_pydata(verts, edges, faces)
             me.validate()
             me.update()
             obj = bpy.data.objects.new(name or "Mesh", me)
@@ -829,8 +876,10 @@ def t_add_lights(args):
         obj.location = Vector(_vec3(spec.get("location"), (3, -3, 5)))
         look = spec.get("look_at") or spec.get("target")
         if look:
-            tgt = bpy.data.objects.get(look) if isinstance(look, str) and bpy.data.objects.get(look) else look
-            center = tgt.matrix_world.translation if hasattr(tgt, "matrix_world") else Vector(_vec3(tgt))
+            center = _spot_point(look)
+            if center is None:
+                lines.append("%s: could not resolve look_at=%r" % (obj.name, look))
+                continue
             con = obj.constraints.new("TRACK_TO")
             empty = bpy.data.objects.new("%s Target" % obj.name, None)
             _link(empty, spec.get("collection"))
@@ -839,7 +888,8 @@ def t_add_lights(args):
             con.track_axis = "TRACK_NEGATIVE_Z"
             con.up_axis = "UP_Y"
             lines.append("%s: %s @ %s tracking %s" % (obj.name, ltype,
-                                                      list(obj.location), list(center)))
+                                                      [round(c, 2) for c in obj.location],
+                                                      [round(c, 2) for c in center]))
         else:
             obj.rotation_euler = [math.radians(v) for v in _vec3(spec.get("rotation_degrees"))]
             lines.append("%s: %s @ %s energy=%.0f" % (obj.name, ltype, list(obj.location), data.energy))
@@ -868,9 +918,11 @@ def t_add_cameras(args):
         obj.location = Vector(_vec3(spec.get("location"), (7, -7, 5)))
         look = spec.get("look_at") or spec.get("target")
         if look:
-            tgt = bpy.data.objects.get(look) if isinstance(look, str) and bpy.data.objects.get(look) else look
-            center = tgt.matrix_world.translation if hasattr(tgt, "matrix_world") else Vector(_vec3(tgt))
-            _look_at(obj, center, _num(spec.get("roll_degrees"), 0.0) * math.pi / 180.0)
+            point = _spot_point(look)
+            if point is None:
+                lines.append("%s: could not resolve look_at=%r" % (obj.name, look))
+                continue
+            _look_at(obj, point, _num(spec.get("roll_degrees"), 0.0) * math.pi / 180.0)
         else:
             obj.rotation_euler = Euler([math.radians(v) for v in _vec3(spec.get("rotation_degrees"))], "XYZ")
         if spec.get("make_active", True):
@@ -1497,9 +1549,10 @@ def t_set_active_camera_view(args):
         cam.location = Vector(_vec3(args["location"]))
     look = args.get("look_at") or args.get("target")
     if look:
-        tgt = bpy.data.objects.get(look) if isinstance(look, str) and bpy.data.objects.get(look) else look
-        center = tgt.matrix_world.translation if hasattr(tgt, "matrix_world") else Vector(_vec3(tgt))
-        _look_at(cam, center, _num(args.get("roll_degrees"), 0.0) * math.pi / 180.0)
+        point = _spot_point(look)
+        if point is None:
+            return _err("could not resolve look_at=%r" % look)
+        _look_at(cam, point, _num(args.get("roll_degrees"), 0.0) * math.pi / 180.0)
     if args.get("lens"):
         cam.data.lens = _num(args["lens"], cam.data.lens)
     if args.get("frame_scene"):
@@ -1557,20 +1610,37 @@ TOOL_SCHEMAS = [
             "energy": {"type": "number", "description": "watts for Blender lights"},
             "color": {"type": "array", "items": {"type": "number"}},
             "lens": {"type": "number"}, "sensor_width": {"type": "number"},
-            "look_at": {"description": "point [x,y,z] or object name for cameras/lights"},
+            "look_at": {"type": "string",
+                        "description": "object name, or a point written as \"x,y,z\""},
             "body": {"type": "string", "description": "text content for type=text"},
             "extrude": {"type": "number"},
-            "points": {"type": "array", "description": "for curve: list of polylines of [x,y,z]"},
+            "points": {"type": "array",
+                       "description": "for curve: list of polylines, each a list of [x,y,z]",
+                       "items": {"type": "array", "items": {"type": "number"}}},
             "bevel_depth": {"type": "number"},
-            "material": {"description": "material spec or name"},
+            "mesh_vertices": {"type": "array",
+                              "description": "for type=mesh: vertex positions [[x,y,z], ...]",
+                              "items": {"type": "array", "items": {"type": "number"}}},
+            "mesh_faces": {"type": "array",
+                           "description": "for type=mesh: polygons as vertex-index lists",
+                           "items": {"type": "array", "items": {"type": "integer"}}},
+            "mesh_edges": {"type": "array",
+                           "description": "for type=mesh: edges as vertex-index pairs",
+                           "items": {"type": "array", "items": {"type": "integer"}}},
+            "material": {"type": "object",
+                         "description": "material spec, e.g. {\"name\": \"Red\", "
+                                        "\"Base Color\": [0.8,0.05,0.05]}",
+                         "additionalProperties": True},
             "collection": {"type": "string"}, "parent": {"type": "string"},
             "smooth": {"type": "boolean"}}}},
-         "required": ["objects"]}, ["objects"]),
+         }, ["objects"]),
     _fn("modify_objects", "Transform or re-parent existing objects: location, delta_location, "
         "rotation_degrees, delta_rotation_degrees, scale, scale_uniform, dimensions, name, parent, "
         "collection, hide_viewport, hide_render, look_at, smooth, material.",
-        {"targets": {"description": "names/wildcards, 'selected', 'all', or omit for selection"},
-         "changes": {"type": "object", "description": "one or more of the fields above"},
+        {"targets": {"type": "string",
+                     "description": "names/wildcards, 'selected', 'all', or omit for selection"},
+         "changes": {"type": "object", "description": "one or more of the fields above",
+                    "additionalProperties": True},
          "location": {"type": "array", "items": {"type": "number"}},
          "delta_location": {"type": "array", "items": {"type": "number"}},
          "rotation_degrees": {"type": "array", "items": {"type": "number"}},
@@ -1579,35 +1649,46 @@ TOOL_SCHEMAS = [
          "scale_uniform": {"type": "number"},
          "dimensions": {"type": "array", "items": {"type": "number"}},
          "name": {"type": "string"}, "parent": {"type": "string"},
-         "collection": {"type": "string"}, "look_at": {},
+         "collection": {"type": "string"},
+         "look_at": {"type": "string",
+                     "description": "object name, or a point written as \"x,y,z\""},
          "hide_viewport": {"type": "boolean"}, "hide_render": {"type": "boolean"},
          "smooth": {"type": "boolean"}, "apply_transform": {"type": "boolean"},
-         "material": {"description": "material spec or name"}}, ["targets"]),
+         "material": {"type": "object",
+                      "description": "material spec, e.g. {\"name\": \"Red\", \"Base Color\": "
+                                     "[0.8,0.05,0.05], \"Roughness\": 0.35}",
+                      "additionalProperties": True}}, ["targets"]),
     _fn("delete_objects", "Delete objects from the scene.",
-        {"targets": {"description": "names/wildcards, 'selected' or 'all'"}}, ["targets"]),
+        {"targets": {"type": "string",
+                     "description": "names/wildcards, 'selected' or 'all'"}}, ["targets"]),
     _fn("duplicate_objects", "Duplicate objects with an optional offset per copy.",
-        {"targets": {"description": "names or 'selected'"}, "count": {"type": "integer"},
+        {"targets": {"type": "string", "description": "names or 'selected'"},
+         "count": {"type": "integer"},
          "offset": {"type": "array", "items": {"type": "number"}},
          "name_pattern": {"type": "string"}}, ["targets"]),
     _fn("select_objects", "Select objects and set the active object.",
-        {"targets": {"description": "names/wildcards, 'all' or 'selected'"},
+        {"targets": {"type": "string",
+                     "description": "names/wildcards, 'all' or 'selected'"},
          "active": {"type": "string"}, "deselect_others": {"type": "boolean"}}, ["targets"]),
     _fn("set_material", "Create or update a Principled material and assign it to objects. "
         "Keys: name, color/Base Color [r,g,b] (0-1), Roughness, Metallic, Alpha, IOR, Emission Color, "
         "Emission Strength, Transmission Weight, Coat Weight, Sheen Weight, Specular IOR Level; "
         "any other Principled socket name also works, or use sockets={...}.",
-        {"targets": {"description": "names or 'selected'"},
-         "material": {"type": "object", "description": "e.g. {\"name\":\"Red\",\"Base Color\":[0.8,0.05,0.05],\"Roughness\":0.35}"}},
+        {"targets": {"type": "string", "description": "names or 'selected'"},
+         "material": {"type": "object", "description": "e.g. {\"name\":\"Red\",\"Base Color\":[0.8,0.05,0.05],\"Roughness\":0.35}",
+                         "additionalProperties": True}},
         ["targets", "material"]),
     _fn("material_nodes", "Edit a material's shader node tree: add nodes, link sockets, set inputs, "
         "remove nodes. Node types e.g. ShaderNodeTexImage, ShaderNodeTexNoise, ShaderNodeBump, "
         "ShaderNodeMapping, ShaderNodeMixRGB, ShaderNodeTexCoord.",
-        {"material": {"type": "string"}, "targets": {"description": "fallback object to take material from"},
+        {"material": {"type": "string"},
+         "targets": {"type": "string", "description": "fallback object to take material from"},
          "operations": {"type": "array", "items": {"type": "object", "properties": {
              "op": {"type": "string", "description": "add | link | set | remove"},
              "node": {"type": "string"}, "node_type": {"type": "string"},
              "name": {"type": "string"}, "location": {"type": "array", "items": {"type": "number"}},
-             "inputs": {"type": "object"},
+             "inputs": {"type": "object", "description": "socket name -> value",
+                        "additionalProperties": True},
              "from_node": {"type": "string"}, "from_socket": {"type": "string"},
              "to_node": {"type": "string"}, "to_socket": {"type": "string"}}}}},
         ["operations"]),
@@ -1615,18 +1696,19 @@ TOOL_SCHEMAS = [
         "{\"type\":\"SUBSURF\",\"levels\":2}, BEVEL, SOLIDIFY, ARRAY, MIRROR, DISPLACE, SHRINKWRAP, "
         "SIMPLE_DEFORM, CURVE, BOOLEAN, REMESH, DECIMATE, WELD, SKIN, SCREW, WAVE, CLOTH, PARTICLES "
         "(use modifiers=[{...}] for several).",
-        {"targets": {"description": "names or 'selected'"},
-         "modifiers": {"type": "array", "items": {"type": "object"}},
+        {"targets": {"type": "string", "description": "names or 'selected'"},
+         "modifiers": {"type": "array", "items": {"type": "object", "description": "modifier spec, e.g. {\"type\":\"SUBSURF\",\"levels\":2}"}},
          "type": {"type": "string"}, "name": {"type": "string"},
          "object": {"type": "string"}}, ["targets"]),
     _fn("apply_modifiers", "Apply (bake) modifiers on mesh objects.",
-        {"targets": {"description": "names or 'selected'"}, "names": {"type": "array", "items": {"type": "string"}}},
+        {"targets": {"type": "string", "description": "names or 'selected'"},
+         "names": {"type": "array", "items": {"type": "string"}}},
         ["targets"]),
     _fn("mesh_edit", "Direct mesh surgery on objects. operation: subdivide, subdivide_smooth, bevel, "
         "inset, extrude, triangulate, merge_by_distance, recalculate_normals, flip_normals, "
         "smooth_verts, dissolve_degenerate, solidify, shade_smooth, shade_flat, decimate, remesh, "
         "select_all, deselect.",
-        {"targets": {"description": "mesh object names or 'selected'"},
+        {"targets": {"type": "string", "description": "mesh object names or 'selected'"},
          "operation": {"type": "string"}, "cuts": {"type": "integer"},
          "smoothness": {"type": "number"}, "width": {"type": "number"},
          "segments": {"type": "integer"}, "thickness": {"type": "number"},
@@ -1637,7 +1719,7 @@ TOOL_SCHEMAS = [
          "factor": {"type": "number"}}, ["targets", "operation"]),
     _fn("boolean", "Boolean-apply operands into a target mesh (DIFFERENCE, UNION, INTERSECT).",
         {"target": {"type": "string", "description": "single mesh object name"},
-         "operands": {"description": "names or 'selected'"},
+         "operands": {"type": "string", "description": "names or 'selected'"},
          "operation": {"type": "string"}, "solver": {"type": "string"},
          "keep_operands": {"type": "boolean"}}, ["target", "operands"]),
     _fn("set_world", "Set the world background: color [r,g,b], strength, hdri=<abs path to .hdr/.exr>, "
@@ -1648,13 +1730,17 @@ TOOL_SCHEMAS = [
         "color, size, look_at} - look_at aims the light at a point or object via a track constraint.",
         {"lights": {"type": "array", "items": {"type": "object"}},
          "type": {"type": "string"}, "location": {"type": "array", "items": {"type": "number"}},
-         "look_at": {}, "energy": {"type": "number"}, "size": {"type": "number"},
+         "look_at": {"type": "string",
+                     "description": "object name, or a point written as \"x,y,z\""},
+         "energy": {"type": "number"}, "size": {"type": "number"},
          "color": {"type": "array", "items": {"type": "number"}}, "name": {"type": "string"}}),
     _fn("add_cameras", "Add cameras: list of {name, lens, sensor_width, location, look_at, "
         "roll_degrees, ortho_scale}. The last one becomes scene.camera unless make_active=false.",
         {"cameras": {"type": "array", "items": {"type": "object"}},
          "lens": {"type": "number"}, "location": {"type": "array", "items": {"type": "number"}},
-         "look_at": {}, "name": {"type": "string"}, "ortho_scale": {"type": "number"}}),
+         "look_at": {"type": "string",
+                     "description": "object name, or a point written as \"x,y,z\""},
+         "name": {"type": "string"}, "ortho_scale": {"type": "number"}}),
     _fn("set_render_settings", "Configure rendering: engine (CYCLES, BLENDER_EEVEE_NEXT, "
         "BLENDER_WORKBENCH), resolution [x,y], resolution_percentage, samples, filepath, "
         "film_transparent, denoise, fps, frame_range [start,end], image_format, color_mode, "
@@ -1676,8 +1762,11 @@ TOOL_SCHEMAS = [
          "samples": {"type": "integer"}}, []),
     _fn("animate", "Keyframe a property over time. property examples: location, rotation_euler, "
         "scale, data.lens, energy. keys=[{frame, value}] where value is a number or [x,y,z].",
-        {"targets": {"description": "names or 'selected'"}, "property": {"type": "string"},
-         "keys": {"type": "array", "items": {"type": "object"}},
+        {"targets": {"type": "string", "description": "names or 'selected'"},
+         "property": {"type": "string"},
+         "keys": {"type": "array", "items": {"type": "object", "properties": {
+             "frame": {"type": "integer"},
+             "value": {"type": "array", "items": {"type": "number"}}}}},
          "interpolation": {"type": "string", "description": "BEZIER, LINEAR, CONSTANT, EASE_IN_OUT"}},
         ["targets", "keys"]),
     _fn("set_frame", "Jump the timeline to a frame.", {"frame": {"type": "integer"}}, ["frame"]),
@@ -1685,13 +1774,16 @@ TOOL_SCHEMAS = [
         "operations=[{op: create|move|delete|select|remove_empty, name, parent, objects}]",
         {"operations": {"type": "array", "items": {"type": "object"}}}, ["operations"]),
     _fn("geometry_nodes", "Add or retarget a geometry-nodes modifier and set its inputs.",
-        {"targets": {"description": "names or 'selected'"}, "node_group": {"type": "string"},
-         "inputs": {"type": "object"}}, ["targets"]),
+        {"targets": {"type": "string", "description": "names or 'selected'"},
+         "node_group": {"type": "string"},
+         "inputs": {"type": "object", "description": "input socket name -> value",
+                               "additionalProperties": True}}, ["targets"]),
     _fn("bpy_operator", "Call ANY Blender operator directly (bpy.ops.*). Use search_api first to find "
         "the exact name. Example: operator='object.shade_smooth', "
         "parameters={'keep_sharp_edges': true}.",
         {"operator": {"type": "string", "description": "category.name e.g. mesh.primitive_torus_add"},
-         "parameters": {"type": "object"}, "override": {"type": "object"},
+         "parameters": {"type": "object", "additionalProperties": True},
+         "override": {"type": "object", "additionalProperties": True},
          "select_all_first": {"type": "boolean"}}, ["operator"]),
     _fn("search_api", "Search Blender's Python API for operators, types and data collections - "
         "how you discover anything not covered by the high-level tools.",
@@ -1717,7 +1809,8 @@ TOOL_SCHEMAS = [
     _fn("import_export", "Import or export assets (obj, fbx, gltf/glb, stl, ply, usd, abc, dae, svg, blend).",
         {"operation": {"type": "string", "description": "import or export"},
          "filepath": {"type": "string"}, "kind": {"type": "string"},
-         "selected_only": {"type": "boolean"}, "parameters": {"type": "object"}},
+         "selected_only": {"type": "boolean"},
+         "parameters": {"type": "object", "additionalProperties": True}},
         ["operation", "filepath"]),
     _fn("undo_redo", "Undo, redo or push an undo mark in the Blender history.",
         {"action": {"type": "string", "description": "undo | redo | push"},
@@ -1731,7 +1824,9 @@ TOOL_SCHEMAS = [
     _fn("set_active_camera_view", "Move/aim the active camera, change its lens, or frame the whole "
         "scene (frame_scene=true).",
         {"camera": {"type": "string"}, "location": {"type": "array", "items": {"type": "number"}},
-         "look_at": {}, "lens": {"type": "number"}, "roll_degrees": {"type": "number"},
+         "look_at": {"type": "string",
+                     "description": "object name, or a point written as \"x,y,z\""},
+         "lens": {"type": "number"}, "roll_degrees": {"type": "number"},
          "frame_scene": {"type": "boolean"},
          "view_direction": {"type": "array", "items": {"type": "number"}}}),
 ]
@@ -1785,6 +1880,44 @@ NEEDS_UNDO = set(_DISPATCH) - READ_ONLY - {"undo_redo", "render_image", "set_fra
 
 def tool_names():
     return sorted(_DISPATCH)
+
+
+def schema_problems():
+    """Validate the tool schemas against what strict providers accept.
+
+    Anthropic (via Bedrock) rejects a tool whose property has no JSON Schema
+    ``type`` with an opaque "HTTP 400: Provider returned error", which costs a
+    debugging round trip. Anything that can be checked locally is checked here.
+    """
+    problems = []
+
+    def walk(props, tool, path):
+        for name, spec in props.items():
+            where = "%s.%s%s" % (tool, path, name)
+            if not isinstance(spec, dict) or not spec:
+                problems.append("%s: empty schema %r" % (where, spec))
+                continue
+            declared = spec.get("type")
+            if declared is None:
+                problems.append("%s: no type" % where)
+            if declared == "array" and "items" not in spec:
+                problems.append("%s: array without items" % where)
+            if declared == "object" and "properties" not in spec and "additionalProperties" not in spec:
+                problems.append("%s: object without properties" % where)
+            items = spec.get("items")
+            if declared == "array" and isinstance(items, dict):
+                if items.get("type") is None and "oneOf" not in items and "anyOf" not in items:
+                    problems.append("%s: array items without type" % (where + "[]"))
+                if items.get("type") == "object":
+                    walk(items.get("properties") or {}, tool, path + name + "[].")
+
+    for schema in TOOL_SCHEMAS:
+        fn = schema["function"]
+        params = fn["parameters"]
+        if params.get("type") != "object":
+            problems.append("%s: parameters must be an object" % fn["name"])
+        walk(params.get("properties") or {}, fn["name"], "")
+    return problems
 
 
 def mark_undo(name, args=None):

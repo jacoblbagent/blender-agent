@@ -183,6 +183,18 @@ remote model switching, web page served).
 GUI checks (run separately, needs a display): workspace creation, a live streamed
 agent turn, one-step undo of all agent-created objects, and screenshots of the UI.
 
+Live checks against the real API (costs a few cents of credits):
+
+```bash
+blender -b --python tests/set_key_from_env.py -- ~/path/to/.env   # prefs.api_key from an existing env file
+blender -b --python tests/live_check.py                          # one real agent turn, prints the transcript
+```
+
+`tools.schema_problems()` (asserted in the suite) validates every tool schema the
+way strict providers do: a property without a JSON Schema `type` makes
+Anthropic-on-Bedrock reject the whole request with an opaque
+`HTTP 400: Provider returned error`, so this is checked before it can reach the wire.
+
 ## Notes
 
 - No third-party Python packages: the client uses `requests`, which Blender bundles.

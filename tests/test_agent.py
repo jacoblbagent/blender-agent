@@ -83,6 +83,11 @@ def main():
         check("workspace fails cleanly without a window", "window" in msg_ws.lower(), msg_ws)
 
     heading("2. tool layer on a real Blender scene")
+    problems = tools.schema_problems()
+    check("tool schemas are provider-safe", not problems,
+          problems[:6] if problems else "%d schemas clean" % len(tools.TOOL_SCHEMAS))
+    check("look_at accepts 'x,y,z' and an object name",
+          tools._spot_point("1, 2, 3") is not None and tools._spot_point("Cube") is not None)
     bpy.ops.wm.read_homefile(use_empty=True)
     out = tools.execute("create_objects", {"objects": [
         {"type": "cube", "name": "AgentCube", "location": [0, 0, 1], "size": 2},
