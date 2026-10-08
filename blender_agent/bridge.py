@@ -408,9 +408,9 @@ PAGE = r"""<!doctype html>
 <style>
 :root{--bg:#111214;--panel:#191b1e;--line:#2a2d31;--fg:#e8e9ea;--dim:#9aa0a6;--ok:#5fd08a;--bad:#f06a6a;--accent:#7aa2f7}
 *{box-sizing:border-box}
-html,body{margin:0;height:100%}
+html,body{margin:0;height:100%;overflow:hidden}
 body{background:var(--bg);color:var(--fg);font:15px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column;height:100dvh}
-header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--panel);flex:none}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--dim);flex:none}
 .dot.busy{background:var(--accent)}
 .dot.done{background:var(--ok)}
@@ -421,7 +421,7 @@ header{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1
 button,input,select,textarea{font:inherit;touch-action:manipulation;border-radius:4px}
 button{background:#23262a;color:var(--fg);border:1px solid var(--line);padding:8px 12px;cursor:pointer}
 button:disabled{opacity:.45}
-#log{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px;-webkit-overflow-scrolling:touch}
+#log{flex:1;min-height:0;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px;-webkit-overflow-scrolling:touch}
 .row{max-width:100%}
 .who{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:2px}
 .txt{white-space:pre-wrap;word-break:break-word;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px 10px}
@@ -429,21 +429,23 @@ button:disabled{opacity:.45}
 .kind-tool .txt{background:#15181a;color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
 .kind-error .txt{border-color:#4a2626;color:#f7c9c9}
 .kind-info .txt{background:transparent;border:0;color:var(--dim);font-size:12.5px;padding:2px}
-footer{border-top:1px solid var(--line);background:var(--panel);padding:10px 12px;display:flex;gap:8px;flex-wrap:wrap}
+footer{border-top:1px solid var(--line);background:var(--panel);padding:10px 12px;display:flex;gap:8px;flex-wrap:wrap;flex:none}
 #p{flex:1;min-width:0;background:#0f1012;color:var(--fg);border:1px solid var(--line);padding:10px 12px}
+#model{flex:0 1 42%;min-width:0;background:#23262a;color:var(--fg);border:1px solid var(--line);padding:8px 10px}
 #token{width:100%;background:#0f1012;color:var(--fg);border:1px solid var(--line);padding:10px 12px}
 #gate{display:none;padding:14px 12px;gap:8px;flex-direction:column;border-bottom:1px solid var(--line)}
 #gate.show{display:flex}
 #gatehint{color:var(--dim);font-size:12.5px;line-height:1.4}
 #gateerr{color:var(--bad);font-size:12.5px;min-height:1em}
-#objs{color:var(--dim);font-size:12px;padding:6px 12px;border-bottom:1px solid var(--line);white-space:pre-wrap}
-#shotbox{display:none;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+#objs{color:var(--dim);font-size:12px;padding:6px 12px;border-bottom:1px solid var(--line);white-space:pre-wrap;max-height:18vh;overflow-y:auto;flex:none}
+#shotbox{display:none;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel);flex:none}
 #shotbox.show{display:block}
-#shot{width:100%;max-width:520px;display:block;border:1px solid var(--line);border-radius:4px;background:#0b0c0d}
-#shotcap{color:var(--dim);font-size:12px;margin-top:5px}
-#setup{display:none;padding:8px 12px;border-bottom:1px solid var(--line);background:#2a1c1c;color:#f7c9c9;font-size:12.5px;line-height:1.45}
+#shot{display:block;margin:0 auto;width:auto;max-width:100%;max-height:32vh;border:1px solid var(--line);border-radius:4px;background:#0b0c0d}
+#shotcap{color:var(--dim);font-size:12px;margin-top:5px;text-align:center}
+#setup{display:none;padding:8px 12px;border-bottom:1px solid var(--line);background:#2a1c1c;color:#f7c9c9;font-size:12.5px;line-height:1.45;flex:none}
 #setup.show{display:block}
 @media (max-width:640px){#p,#token,#model{font-size:16px}}
+@media (max-height:520px){#objs{max-height:12vh}#shot{max-height:24vh}}
 </style></head>
 <body>
 <header>
