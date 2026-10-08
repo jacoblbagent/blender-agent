@@ -141,7 +141,14 @@ phone or laptop while Blender keeps working on your desktop.
    ./scripts/tailnet.sh install-unit # systemd --user unit + 10-min self-heal timer
    ```
 
-3. Open `https://<node>.<tailnet>.ts.net:8770/?token=<token>` on any tailnet device.
+3. Open `http://<node>.<tailnet>.ts.net:8770/?token=<token>` on any tailnet device.
+
+   **Use `http://`, not `https://`.** `tailscale serve --tcp` is a plain TCP
+   forward — it does not terminate TLS, so an `https://` URL fails with
+   "wrong version number". Traffic is WireGuard-encrypted end to end regardless;
+   there is just no browser padlock. If you want a real certificate, enable
+   *HTTPS Certificates* in the Tailscale admin console and publish with
+   `tailscale serve --bg --https=8770 http://127.0.0.1:8770` instead.
 
 What the page gives you: live status (Blender version, scene, object list with
 transforms, agent state), the running transcript, a model dropdown built from the
@@ -154,6 +161,10 @@ funnel), and every endpoint except `/healthz` and the static page needs the bear
 token. Note this is a chat box wired to a scriptable 3D app — the tailnet plus the
 token are the whole gate, so treat the token like a password and rotate it with
 **New Bridge Token** if a device goes missing.
+
+Verified from a real browser routed through the tailnet (`socks5://localhost:1055`):
+the page loads, renders live status (`idle | <model> | 5.2.2 LTS`), lists the scene
+objects and populates the model dropdown from the live catalogue.
 
 ## Tests
 

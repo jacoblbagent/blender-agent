@@ -52,8 +52,13 @@ cmd_url() {
   local name
   name="$(dns_name)"
   log "reachable at"
-  echo "  https://${name:-<node>.<tailnet>.ts.net}:$PORT/"
-  echo "  (the page asks for the bridge token shown in Blender's Agent panel)"
+  # `tailscale serve --tcp` is a plain TCP forward: it does NOT terminate TLS, so
+  # the URL must be http:// - an https:// URL fails with "wrong version number".
+  echo "  http://${name:-<node>.<tailnet>.ts.net}:$PORT/?token=<token>"
+  echo "  (get the token from Blender's Agent panel; traffic is WireGuard-encrypted,"
+  echo "   there is just no browser padlock)"
+  echo "  want https? enable HTTPS Certificates in the Tailscale admin console, then:"
+  echo "     tailscale serve --bg --https=$PORT http://127.0.0.1:$PORT"
 }
 
 cmd_verify() {
