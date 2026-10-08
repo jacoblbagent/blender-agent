@@ -420,6 +420,11 @@ def main():
            get("/api/models", token=old_token)[0]))
     check("rotation is pinned for restarts", bridge._read_pinned_token() == fresh,
           bridge._read_pinned_token())
+    check("the link handed to a browser carries the token",
+          bridge.link(prefs).endswith("?token=" + fresh), bridge.link(prefs)[:40])
+    explicit = bridge.link(prefs, host="example.ts.net")
+    check("an explicit public host is used in the link",
+          explicit == "http://example.ts.net:8771/?token=" + fresh, explicit)
 
     check("healthz open without a token", box.get("health", (0, ""))[0] == 200)
     page = box.get("page", (0, ""))[1]

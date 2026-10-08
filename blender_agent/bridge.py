@@ -13,6 +13,7 @@ stops anything else on the tailnet from driving your Blender.
 import json
 import os
 import secrets
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -40,6 +41,65 @@ def url(token=None, host=None):
     port = _server["port"] or DEFAULT_PORT
     base = "http://%s:%d/" % (host or "127.0.0.1", port)
     return base + ("?token=%s" % token if token else "")
+
+
+def link(prefs=None, host=None):
+    """The full URL to open in a browser - it carries the token.
+
+    Handing over a bare URL only gets the user the token gate, and the token lives
+    behind the panel's clipboard button, so the thing worth copying is the link. The
+    host is the tailnet name when we can find it, otherwise loopback.
+    """
+    prefs = prefs or _prefs()
+    token_value = ""
+    if prefs is not None:
+        token_value = (prefs.bridge_token or "").strip() or _read_pinned_token()
+    return url(token_value or None, host=host or public_host(prefs) or None)
+
+
+def public_host(prefs=None):
+    """Hostname for shareable links: the preference, else the Tailscale node name."""
+    prefs = prefs or _prefs()
+    if prefs is not None and (getattr(prefs, "bridge_host", "") or "").strip():
+        return prefs.bridge_host.strip()
+    return _tailnet_name()
+
+
+_tailnet = {"checked": False, "value": ""}
+
+
+def _tailnet_name():
+    """Best-effort: ask tailscaled for this node's MagicDNS name (cached).
+
+    A loopback link is useless to the device the user actually opens it on, and the
+    add-on cannot know the tailnet name any other way, so this is worth one short
+    subprocess call the first time it is needed. Failures are silent.
+    """
+    if _tailnet["checked"]:
+        return _tailnet["value"]
+    _tailnet["checked"] = True
+    sock = os.path.join(os.path.expanduser("~"), ".tailscale", "tailscaled.sock")
+    candidates = [
+        ["tailscale", "--socket=" + sock, "status", "--json"],
+        [os.path.join(os.path.expanduser("~"), "bin", "tailscale"),
+         "--socket=" + sock, "status", "--json"],
+        ["tailscale", "status", "--json"],
+    ]
+    for command in candidates:
+        try:
+            done = subprocess.run(command, capture_output=True, text=True, timeout=3)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode != 0:
+            continue
+        try:
+            name = json.loads(done.stdout)["Self"]["DNSName"].rstrip(".")
+        except (ValueError, KeyError, TypeError):
+            continue
+        if name:
+            _tailnet["value"] = name
+            return name
+    return ""
 
 
 def _apply_token(value):

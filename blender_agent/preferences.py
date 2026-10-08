@@ -138,6 +138,12 @@ class BlenderAgentPreferences(bpy.types.AddonPreferences):
         name="Bridge Port", default=8770, min=1024, max=65535,
         description="Loopback port the bridge listens on; publish it with tailscale serve",
     )
+    bridge_host: StringProperty(
+        name="Public Host (for links)",
+        description="Hostname used in the copied link, e.g. <node>.<tailnet>.ts.net - "
+                    "detected from Tailscale when empty",
+        default="",
+    )
     bridge_token: StringProperty(
         name="Bridge Token", default="",
         description="Bearer token required by the remote bridge (generated on first start)",
@@ -209,10 +215,11 @@ class BlenderAgentPreferences(bpy.types.AddonPreferences):
         from . import bridge as bridge_mod
         if bridge_mod.is_running():
             b.label(text="listening on %s" % bridge_mod.url(), icon="CHECKMARK")
-            b.label(text="token: %s" % (self.bridge_token or "-"))
+            b.label(text="Open this link (it carries the token):")
+            b.label(text=bridge_mod.link(self))
             row = b.row(align=True)
-            row.operator("blender_agent.bridge_copy", text="Copy URL", icon="COPY_ID").what = "url"
-            row.operator("blender_agent.bridge_copy", text="Copy Token", icon="COPY_ID").what = "token"
+            row.operator("blender_agent.bridge_copy", text="Copy Link", icon="COPY_ID").what = "link"
+            row.operator("blender_agent.bridge_copy", text="Copy Token", icon="KEYINGSET").what = "token"
         else:
             b.label(text="bridge stopped", icon="PAUSE")
         row = b.row(align=True)
@@ -220,6 +227,7 @@ class BlenderAgentPreferences(bpy.types.AddonPreferences):
         row.operator("blender_agent.bridge_token", text="New Token", icon="FILE_REFRESH")
         b.prop(self, "bridge_autostart")
         b.prop(self, "bridge_port")
+        b.prop(self, "bridge_host")
         if bridge_mod.is_running():
             b.label(text="publish: scripts/tailnet.sh publish")
 

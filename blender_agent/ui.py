@@ -240,9 +240,8 @@ def _draw_panel(layout, context, transcript_limit=None):
     from . import bridge as bridge_mod
     if bridge_mod.is_running():
         remote = col.row(align=True)
-        remote.label(text="Remote %s" % bridge_mod.url(), icon="INTERNET")
-        remote.operator("blender_agent.bridge_copy", text="", icon="COPY_ID").what = "url"
-        remote.operator("blender_agent.bridge_copy", text="", icon="KEYINGSET").what = "token"
+        remote.label(text="Remote", icon="INTERNET")
+        remote.operator("blender_agent.bridge_copy", text="Copy Link", icon="COPY_ID").what = "link"
         remote.operator("blender_agent.bridge_token", text="", icon="FILE_REFRESH")
         remote.operator("blender_agent.bridge_toggle", text="", icon="PAUSE")
     else:
@@ -628,7 +627,12 @@ class BLENDER_AGENT_OT_bridge_copy(Operator):
     def execute(self, context):
         from . import bridge as bridge_mod
         prefs = _prefs(context)
-        value = bridge_mod.url() if self.what == "url" else (prefs.bridge_token or "")
+        if self.what == "link":
+            value = bridge_mod.link(prefs)
+        elif self.what == "url":
+            value = bridge_mod.url()
+        else:
+            value = prefs.bridge_token or ""
         if not value:
             self.report({"ERROR"}, "Nothing to copy yet")
             return {"CANCELLED"}
