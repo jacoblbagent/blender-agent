@@ -36,7 +36,7 @@ AUTO_TOOLS = frozenset((
 
 GEOMETRY = frozenset(("MESH", "CURVE", "SURFACE", "FONT", "META"))
 
-THUMB_SCALE = 8.0            # panel thumbnail: 32px preview icon * scale
+THUMB_SCALE = 6.0            # panel thumbnail ceiling: 32px preview icon * scale
 CAM_DIRECTION = (1.0, -1.0, 0.62)   # a three-quarter view
 CAM_ASPECT = 9.0 / 16.0
 PREVIEW_KEY = "agent_shot"
@@ -62,6 +62,39 @@ def icon_id():
         return _pcoll[PREVIEW_KEY].icon_id or 0
     except (KeyError, AttributeError):
         return 0
+
+
+def thumb_scale(context=None, ceiling=None):
+    """Icon scale that keeps the thumbnail inside the panel it is drawn in.
+
+    Blender draws a custom preview at scale * its own size but reserves less space
+    than that for it, and the icon is drawn low in its slot, so an oversized scale
+    bleeds out of the box and onto the rows underneath (the file name and the
+    transcript). Size it from the sidebar width instead of guessing.
+    """
+    ceiling = THUMB_SCALE if ceiling is None else ceiling
+    icon_width = 32.0
+    try:
+        icon_width = float(_pcoll[PREVIEW_KEY].icon_size[0]) or icon_width
+    except (KeyError, AttributeError, TypeError):
+        pass
+    avail = 0.0
+    try:
+        region = getattr(context, "region", None)
+        avail = float(getattr(region, "width", 0) or 0)
+    except (TypeError, ValueError):
+        avail = 0.0
+    if avail <= 0:
+        return ceiling
+    # The region width is in device pixels while the icon is drawn at
+    # icon_size * scale * ui_scale, so divide the interface scale back out.
+    ui_scale = 1.0
+    try:
+        ui_scale = float(bpy.context.preferences.system.ui_scale) or 1.0
+    except (AttributeError, TypeError, ValueError):
+        ui_scale = 1.0
+    # Leave room for the box borders, the panel indent and a scrollbar.
+    return max(1.5, min(ceiling, (avail - 110.0) / (icon_width * ui_scale)))
 
 
 def _load_icon(path):

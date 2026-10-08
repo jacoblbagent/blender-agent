@@ -174,9 +174,11 @@ def _draw_shot(layout, context):
         return
     icon = shots.icon_id()
     if icon:
+        box.separator(factor=0.3)
         row = box.row(align=True)
         row.alignment = "CENTER"
-        row.template_icon(icon_value=icon, scale=shots.THUMB_SCALE)
+        row.template_icon(icon_value=icon, scale=shots.thumb_scale(context))
+        box.separator(factor=0.3)
     count = len(shot["objects"])
     box.label(text="%s - %d object%s" % (shot["name"], count,
                                          "" if count == 1 else "s"))

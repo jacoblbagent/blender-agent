@@ -55,6 +55,20 @@ def reset_log():
         os.remove(MOCK_LOG)
 
 
+class _Region:
+    """Stand-in for a UI region: the panel code only reads .width."""
+
+    def __init__(self, width):
+        self.width = width
+
+
+class _Ctx:
+    """Stand-in for a panel context: only .region.width is read."""
+
+    def __init__(self, width):
+        self.region = _Region(width)
+
+
 # --------------------------------------------------------------- test plan --
 
 def main():
@@ -209,6 +223,11 @@ def main():
     check("object names come from the tool arguments",
           shots.names_from_args({"objects": [{"name": "A"}, {"name": "B"}]}) == ["A", "B"]
           and shots.names_from_args({"targets": "Cube"}) == ["Cube"])
+    check("the thumbnail is sized to fit the panel",
+          shots.thumb_scale(None) == shots.THUMB_SCALE
+          and shots.thumb_scale(_Ctx(280)) < shots.THUMB_SCALE
+          and shots.thumb_scale(_Ctx(2000)) == shots.THUMB_SCALE,
+          (shots.thumb_scale(_Ctx(280)), shots.thumb_scale(_Ctx(2000))))
     meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
     framed = shots._framing_targets(meshes)
     check("a huge ground plane does not shrink the model",
