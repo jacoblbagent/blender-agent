@@ -243,6 +243,7 @@ def _draw_panel(layout, context, transcript_limit=None):
         remote.label(text="Remote %s" % bridge_mod.url(), icon="INTERNET")
         remote.operator("blender_agent.bridge_copy", text="", icon="COPY_ID").what = "url"
         remote.operator("blender_agent.bridge_copy", text="", icon="KEYINGSET").what = "token"
+        remote.operator("blender_agent.bridge_token", text="", icon="FILE_REFRESH")
         remote.operator("blender_agent.bridge_toggle", text="", icon="PAUSE")
     else:
         col.operator("blender_agent.bridge_toggle", text="Serve On Tailnet", icon="INTERNET")

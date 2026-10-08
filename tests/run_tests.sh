@@ -10,7 +10,8 @@ LOG="/tmp/blender_agent_mock.jsonl"
 RESULT="/tmp/blender_agent_result.json"
 OUT="/tmp/blender_agent_test_output.txt"
 TOKENS="/tmp/blender_agent_test_token"
-rm -f "$LOG" "$RESULT" "$TOKENS"
+SETUP="/tmp/blender_agent_test_setup.json"
+rm -f "$LOG" "$RESULT" "$TOKENS" "$SETUP"
 
 python3 "$HERE/tests/mock_openrouter.py" --port "$PORT" --scenario "$HERE/tests/scenario.json" \
   --log "$LOG" --reset-log > /tmp/blender_agent_mock.out 2>&1 &
@@ -29,6 +30,7 @@ done
 
 MOCK_URL="http://127.0.0.1:$PORT/v1" MOCK_LOG="$LOG" MOCK_RESULT="$RESULT" \
   BLENDER_AGENT_NO_MODEL_CACHE=1 BLENDER_AGENT_TOKEN_FILE="$TOKENS" \
+  BLENDER_AGENT_SETUP_FILE="$SETUP" \
   blender -b --python-expr "
 import bpy
 bpy.ops.preferences.addon_enable(module='blender_agent')

@@ -1,5 +1,8 @@
 """Addon preferences: credentials, model selection, agent limits."""
 
+import json
+import os
+
 import bpy
 from bpy.props import (
     BoolProperty,
@@ -10,6 +13,14 @@ from bpy.props import (
 )
 
 from . import openrouter
+
+# A small 0600 sidecar next to the add-on's config dir. Blender wipes an add-on's
+# preferences whenever it is re-registered, and the add-on's host service stops
+# Blender without saving preferences - either way the user's API key and model
+# disappeared and "nothing sends" until they were re-entered. The key is read back
+# from here (or from $OPENROUTER_API_KEY) when the preference is empty.
+SETUP_FILE_ENV = "BLENDER_AGENT_SETUP_FILE"
+KEY_ENV = "OPENROUTER_API_KEY"
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Blender Agent, an expert 3D artist and technical director with FULL "
@@ -206,7 +217,7 @@ class BlenderAgentPreferences(bpy.types.AddonPreferences):
             b.label(text="bridge stopped", icon="PAUSE")
         row = b.row(align=True)
         row.operator("blender_agent.bridge_toggle", icon="PLAY" if not bridge_mod.is_running() else "PAUSE")
-        row.operator("blender_agent.bridge_token", text="", icon="FILE_REFRESH")
+        row.operator("blender_agent.bridge_token", text="New Token", icon="FILE_REFRESH")
         b.prop(self, "bridge_autostart")
         b.prop(self, "bridge_port")
         if bridge_mod.is_running():
@@ -222,14 +233,110 @@ def get_prefs(context=None):
     return context.preferences.addons[__package__].preferences
 
 
+# --------------------------------------------------------------- persistence --
+
+def _setup_path():
+    override = os.environ.get(SETUP_FILE_ENV)
+    if override:
+        return override
+    # user_resource(create=True) makes a *directory*; join the file name onto it.
+    base = bpy.utils.user_resource("CONFIG", path="blender_agent", create=True)
+    return os.path.join(base, "setup.json")
+
+
+def _read_setup():
+    try:
+        with open(_setup_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_setup(**values):
+    """Merge values into the sidecar and write it 0600, atomically."""
+    data = _read_setup()
+    for key, value in values.items():
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    path = _setup_path()
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return data
+
+
+def resolved_api_key(prefs=None):
+    """The key to use: the preference, then our own last-known key, then the env.
+
+    The sidecar beats the environment on purpose: it records the key the user last
+    actually used in Blender, so changing the key in the panel is not silently undone
+    by a stale OPENROUTER_API_KEY the next time the add-on loads.
+    """
+    prefs = prefs or get_prefs()
+    for candidate in ((prefs.api_key or "").strip(),
+                      str(_read_setup().get("api_key") or "").strip(),
+                      (os.environ.get(KEY_ENV) or "").strip()):
+        if candidate:
+            return candidate
+    return ""
+
+
+def remember(prefs=None):
+    """Persist the key/model so a preference reset cannot lose them."""
+    prefs = prefs or get_prefs()
+    return _write_setup(model=prefs.resolved_model().strip() or None,
+                        api_key=(prefs.api_key or "").strip() or None)
+
+
+def restore(prefs=None):
+    """Re-apply the key/model after Blender reset the add-on's preferences."""
+    prefs = prefs or get_prefs()
+    saved = _read_setup()
+    store = {}
+    if not (prefs.api_key or "").strip():
+        key = resolved_api_key(prefs)
+        if key:
+            prefs.api_key = key
+            store["api_key"] = key
+    if not prefs.resolved_model().strip():
+        model = str(saved.get("model") or "").strip()
+        if model:
+            prefs.model = "custom"
+            prefs.model_custom = model
+            store["model"] = model
+    if store:
+        _write_setup(**store)
+    return prefs
+
+
 classes = (BlenderAgentPreferences,)
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    try:
+        restore()
+    except Exception:  # noqa: BLE001 - never break add-on registration
+        pass
 
 
 def unregister():
+    try:
+        remember()
+    except Exception:  # noqa: BLE001
+        pass
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

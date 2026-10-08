@@ -25,7 +25,8 @@ from . import agent, openrouter, shots
 DEFAULT_PORT = 8770
 TOKEN_FILE_ENV = "BLENDER_AGENT_TOKEN_FILE"
 
-_server = {"httpd": None, "thread": None, "port": None, "host": "127.0.0.1"}
+_server = {"httpd": None, "thread": None, "port": None, "host": "127.0.0.1",
+           "handler": None, "token": ""}
 
 
 # ------------------------------------------------------------------ helpers --
@@ -41,6 +42,21 @@ def url(token=None, host=None):
     return base + ("?token=%s" % token if token else "")
 
 
+def _apply_token(value):
+    """Make a token change take effect on the running server, not just on restart.
+
+    The server is an instance of a per-start subclass of _BridgeHandler, so setting
+    the base class attribute leaves the live server checking the token it was started
+    with - the rotate button then looks broken (the panel copies a token the server
+    rejects) until Blender restarts.
+    """
+    _server["token"] = value
+    _BridgeHandler.token = value
+    handler = _server.get("handler")
+    if handler is not None:
+        handler.token = value
+
+
 def token(prefs):
     """The bridge token: preferences first, then a small file that survives restarts.
 
@@ -50,27 +66,31 @@ def token(prefs):
     turns into a 401, so a generated token is pinned to disk as well.
     """
     if (prefs.bridge_token or "").strip():
+        _apply_token(prefs.bridge_token)
         return prefs.bridge_token
     pinned = _read_pinned_token()
     if pinned:
         prefs.bridge_token = pinned
+        _apply_token(pinned)
         return pinned
     prefs.bridge_token = secrets.token_urlsafe(24)
     _pin_token(prefs.bridge_token)
+    _apply_token(prefs.bridge_token)
     return prefs.bridge_token
 
 
 def new_token(prefs):
     prefs.bridge_token = secrets.token_urlsafe(24)
     _pin_token(prefs.bridge_token)
+    _apply_token(prefs.bridge_token)
     return prefs.bridge_token
 
 
 def set_token(prefs, value=None):
     """Regenerate (or set) the bridge token and apply it to the live server."""
     prefs.bridge_token = value or secrets.token_urlsafe(24)
-    _BridgeHandler.token = prefs.bridge_token
     _pin_token(prefs.bridge_token)
+    _apply_token(prefs.bridge_token)
     return prefs.bridge_token
 
 
@@ -210,7 +230,8 @@ def start(prefs, port=None, host="127.0.0.1"):
     thread = threading.Thread(target=httpd.serve_forever, name="blender-agent-bridge",
                               daemon=True)
     thread.start()
-    _server.update(httpd=httpd, thread=thread, port=port, host=host)
+    _server.update(httpd=httpd, thread=thread, port=port, host=host, handler=Handler)
+    _apply_token(tok)
     return True, "listening on http://%s:%d (token required)" % (host, port)
 
 
@@ -222,7 +243,7 @@ def stop():
         httpd.shutdown()
         httpd.server_close()
     finally:
-        _server.update(httpd=None, thread=None)
+        _server.update(httpd=None, thread=None, handler=None)
     return True, "bridge stopped"
 
 

@@ -71,6 +71,22 @@ def main():
     check("operator screenshot_model", hasattr(bpy.ops.blender_agent, "screenshot_model"))
     check("operator open_screenshot", hasattr(bpy.ops.blender_agent, "open_screenshot"))
     check("preferences registered", "blender_agent" in bpy.context.preferences.addons)
+    from blender_agent import preferences as prefs_mod
+    prefs = bpy.context.preferences.addons["blender_agent"].preferences
+    keep = (prefs.api_key, prefs.model, prefs.model_custom)
+    prefs.api_key = "sk-test-remember"
+    prefs.model, prefs.model_custom = "custom", "mock/remember-me"
+    prefs_mod.remember(prefs)
+    prefs.api_key = ""
+    prefs.model, prefs.model_custom = "custom", ""
+    prefs_mod.restore(prefs)
+    check("the API key survives a preference reset",
+          prefs.api_key == "sk-test-remember", prefs.api_key[:7])
+    check("the model survives a preference reset",
+          prefs.resolved_model() == "mock/remember-me", prefs.resolved_model())
+    setup_mode = oct(os.stat(prefs_mod._setup_path()).st_mode & 0o777)
+    check("the saved settings are not world readable", setup_mode == "0o600", setup_mode)
+    prefs.api_key, prefs.model, prefs.model_custom = keep
     from blender_agent import ui as ui_mod
     icon_bad = ui_mod.icon_problems()
     check("every UI icon exists in Blender", not icon_bad, icon_bad[:5])
@@ -392,6 +408,18 @@ def main():
     while worker.is_alive() and time.time() - t0 < 90:
         agent.pump_once()          # main thread: runs the agent's tool calls
         time.sleep(0.01)
+
+    # Rotating the token must reach the running server at once, not just prefs.
+    # (/api/models answers without the main thread, so it works after the pump stops.)
+    old_token = "test-token-123"
+    fresh = bridge.set_token(prefs)
+    check("rotation reaches the live server",
+          get("/api/models", token=fresh)[0] == 200
+          and get("/api/models", token=old_token)[0] == 401,
+          (fresh == old_token, get("/api/models", token=fresh)[0],
+           get("/api/models", token=old_token)[0]))
+    check("rotation is pinned for restarts", bridge._read_pinned_token() == fresh,
+          bridge._read_pinned_token())
 
     check("healthz open without a token", box.get("health", (0, ""))[0] == 200)
     page = box.get("page", (0, ""))[1]

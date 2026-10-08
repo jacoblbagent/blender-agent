@@ -177,9 +177,12 @@ dropdown built from the live catalogue, Send/Stop/Clear/Shot, and inline errors
 `POST /api/model {model}`, `POST /api/shot`, `POST /api/stop`, `POST /api/clear`.
 
 The token is pinned to `CONFIG/blender_agent/bridge_token` (mode 0600) when it is
-generated or rotated. Blender resets an add-on's preferences when the add-on is
-re-registered, and the host service stops Blender without saving preferences, so a
-token kept only in prefs would silently change and break every saved link.
+generated or rotated, and rotation applies to the running server immediately - the
+**New Token** button in the panel's Remote row (hover the refresh icon) or in
+Edit > Preferences > Add-ons > Blender Agent rotates it without restarting Blender.
+Blender resets an add-on's preferences when the add-on is re-registered, and the
+host service stops Blender without saving preferences, so a token kept only in prefs
+would silently change and break every saved link.
 
 Safety: the listener is loopback-only, `tailscale serve` is tailnet-only (never
 funnel), and every endpoint except `/healthz` and the static page needs the bearer
@@ -194,7 +197,7 @@ objects and populates the model dropdown from the live catalogue.
 ## Tests
 
 ```bash
-./tests/run_tests.sh        # 95 checks, headless, against a local mock OpenRouter
+./tests/run_tests.sh        # 101 checks, headless, against a local mock OpenRouter
 ```
 
 The mock server (`tests/mock_openrouter.py`) speaks real SSE and tool-call
@@ -225,6 +228,12 @@ Anthropic-on-Bedrock reject the whole request with an opaque
 ## Notes
 
 - No third-party Python packages: the client uses `requests`, which Blender bundles.
-- The API key lives in Blender's user preferences (`userpref.blend`, password field);
-  it is never written to this repo.
+- The API key and model are also kept in `CONFIG/blender_agent/setup.json` (mode
+  0600), written when the add-on unregisters and read back whenever the preference is
+  empty (or `$OPENROUTER_API_KEY` is set). Without it, re-registering the add-on or
+  stopping Blender without saving preferences silently emptied both, and the agent
+  looked broken until they were re-entered. Delete that file (and the preference) to
+  forget the key for good.
+- The API key lives in Blender's user preferences (`userpref.blend`, password field)
+  as well; it is never written to this repo.
 - GPL-3.0-or-later, matching Blender itself.
