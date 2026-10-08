@@ -9,5 +9,9 @@
 
   {"error": {"code": 402, "message": "Insufficient credits for this model."}},
 
-  {"delay": 6, "content": "this response should never arrive because the user cancels"}
+  {"delay": 6, "content": "this response should never arrive because the user cancels"},
+
+  {"tool_calls": [{"name": "create_objects", "arguments": {"objects": [
+      {"type": "sphere", "name": "BridgeSphere", "radius": 1.0, "location": [0, 0, 1]}]}}]},
+  {"content": "Added BridgeSphere via the remote bridge."}
 ]

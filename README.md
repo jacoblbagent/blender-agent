@@ -123,17 +123,51 @@ none of the 7 required `-dev` packages (`libx11-dev`, `libgl-dev`, `libpng-dev`,
 `--check-deps` reports exactly what is missing and prints the install command.
 With those packages present, `--build` is the only remaining step.
 
+## Remote control over the tailnet
+
+The Blender process itself becomes the server, so you can drive the agent from a
+phone or laptop while Blender keeps working on your desktop.
+
+1. In Blender's Agent panel press **Serve On Tailnet** (or tick *Start Tailnet
+   Bridge With Blender* so every session serves it). The bridge binds
+   `127.0.0.1:8770` and prints a token; **Copy URL** / **Copy Token** put both on
+   your clipboard.
+2. Publish it on the tailnet — loopback listeners are unreachable without this,
+   because tailscaled runs in userspace mode:
+
+   ```bash
+   ./scripts/tailnet.sh publish      # tailscale serve --bg --tcp=8770 tcp://127.0.0.1:8770
+   ./scripts/tailnet.sh verify       # proves reachability through tailscaled's SOCKS proxy
+   ./scripts/tailnet.sh install-unit # systemd --user unit + 10-min self-heal timer
+   ```
+
+3. Open `https://<node>.<tailnet>.ts.net:8770/?token=<token>` on any tailnet device.
+
+What the page gives you: live status (Blender version, scene, object list with
+transforms, agent state), the running transcript, a model dropdown built from the
+live catalogue, Send/Stop/Clear, and inline errors (e.g. an unset API key). The
+same thing is available as JSON: `GET /api/status`, `GET /api/models`,
+`POST /api/ask {prompt}`, `POST /api/model {model}`, `POST /api/stop`, `POST /api/clear`.
+
+Safety: the listener is loopback-only, `tailscale serve` is tailnet-only (never
+funnel), and every endpoint except `/healthz` and the static page needs the bearer
+token. Note this is a chat box wired to a scriptable 3D app — the tailnet plus the
+token are the whole gate, so treat the token like a password and rotate it with
+**New Bridge Token** if a device goes missing.
+
 ## Tests
 
 ```bash
-./tests/run_tests.sh        # 52 checks, headless, against a local mock OpenRouter
+./tests/run_tests.sh        # 72 checks, headless, against a local mock OpenRouter
 ```
 
 The mock server (`tests/mock_openrouter.py`) speaks real SSE and tool-call
 deltas, so the suite exercises the whole path: tool implementations against a
 real Blender scene, model catalogue + key validation, a two-turn agent loop in
 both blocking and streaming mode, image feedback (asserts a base64 data URL was
-sent back), HTTP error surfacing, cancellation, message trimming and undo.
+sent back), HTTP error surfacing, cancellation, message trimming, undo, and the
+remote bridge (token enforcement, remote ask → tool call → real object created,
+remote model switching, web page served).
 
 GUI checks (run separately, needs a display): workspace creation, a live streamed
 agent turn, one-step undo of all agent-created objects, and screenshots of the UI.

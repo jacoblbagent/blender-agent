@@ -251,7 +251,103 @@ def main():
     check("cancel stops the run", agent.SESSION.status == "cancelled", agent.SESSION.status)
     check("cancel recorded", any("Stopped by user" in t["text"] for t in agent.SESSION.transcript))
 
-    heading("9. message trimming")
+    heading("10. remote bridge (tailnet path)")
+    import threading
+    import urllib.error
+    import urllib.request
+    from blender_agent import bridge
+
+    prefs.bridge_port = 8771
+    bridge.set_token(prefs, "test-token-123")
+    ok_b, msg_b = bridge.start(prefs)
+    check("bridge started on loopback", ok_b and bridge.is_running(), msg_b)
+
+    base = "http://127.0.0.1:8771"
+    box = {}
+
+    def get(path, token="test-token-123"):
+        req = urllib.request.Request(base + path)
+        if token:
+            req.add_header("Authorization", "Bearer " + token)
+        try:
+            with urllib.request.urlopen(req, timeout=25) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode()
+        except Exception as exc:  # noqa: BLE001
+            return 0, str(exc)
+
+    def post(path, payload, token="test-token-123"):
+        req = urllib.request.Request(base + path, data=json.dumps(payload).encode())
+        req.add_header("Content-Type", "application/json")
+        if token:
+            req.add_header("Authorization", "Bearer " + token)
+        try:
+            with urllib.request.urlopen(req, timeout=25) as r:
+                return r.status, json.loads(r.read().decode() or "{}")
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode() or "{}")
+        except Exception as exc:  # noqa: BLE001
+            return 0, {"error": str(exc)}
+
+    def client():
+        box["health"] = get("/healthz", token=None)
+        box["page"] = get("/", token=None)
+        box["noauth"] = get("/api/status", token=None)
+        box["badtoken"] = get("/api/status", token="wrong")
+        code, payload = post("/api/model", {"model": "mock/scripter-2"})
+        box["setmodel"] = (code, payload)
+        code, payload = post("/api/ask", {"prompt": "Add a sphere to the scene."})
+        box["ask"] = (code, payload)
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            code, raw = get("/api/status")
+            if code == 200:
+                st = json.loads(raw)
+                if not st.get("busy") and st.get("status") in ("done", "error"):
+                    box["status"] = st
+                    break
+            time.sleep(0.3)
+        box["stop"] = post("/api/stop", {})
+        box["hashes"] = get("/api/status")
+
+    worker = threading.Thread(target=client, name="bridge-test-client", daemon=True)
+    worker.start()
+    t0 = time.time()
+    while worker.is_alive() and time.time() - t0 < 90:
+        agent.pump_once()          # main thread: runs the agent's tool calls
+        time.sleep(0.01)
+
+    check("healthz open without a token", box.get("health", (0, ""))[0] == 200)
+    page = box.get("page", (0, ""))[1]
+    check("web UI served", box.get("page", (0, ""))[0] == 200 and "Blender Agent" in page
+          and "<script>" in page)
+    check("page JS escapes survive Python", "join('\\n')" in page,
+          "backslash-n was eaten by the Python string, which breaks the page's JS")
+    check("status requires a token", box.get("noauth", (0, ""))[0] == 401,
+          box.get("noauth", (0, ""))[0])
+    check("wrong token rejected", box.get("badtoken", (0, ""))[0] == 401)
+    check("model can be changed remotely", box.get("setmodel", (0, {}))[0] == 200
+          and box["setmodel"][1].get("model") == "mock/scripter-2",
+          box.get("setmodel"))
+    check("ask accepted remotely", box.get("ask", (0, {}))[0] == 200
+          and box["ask"][1].get("ok"), box.get("ask"))
+    st = box.get("status") or {}
+    check("remote turn completed", st.get("status") == "done", st.get("status"))
+    check("bridge report includes the live scene",
+          any("BridgeSphere" in o for o in st.get("objects") or []),
+          [o for o in (st.get("objects") or []) if "Bridge" in o])
+    check("object actually created in Blender", "BridgeSphere" in bpy.context.scene.objects)
+    check("transcript exposed to the client",
+          any(t["kind"] == "tool" for t in st.get("transcript") or []),
+          [t["kind"] for t in st.get("transcript") or []])
+    check("used the remotely selected model", st.get("model") == "mock/scripter-2",
+          st.get("model"))
+    check("stop endpoint answers", box.get("stop", (0, {}))[0] == 200)
+    ok_s, msg_s = bridge.stop()
+    check("bridge stops cleanly", ok_s and not bridge.is_running(), msg_s)
+
+    heading("11. message trimming")
     from blender_agent import agent as agent_mod
     agent.SESSION.clear()
     for i in range(40):

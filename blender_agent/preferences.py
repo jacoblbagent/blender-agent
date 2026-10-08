@@ -113,6 +113,19 @@ class BlenderAgentPreferences(bpy.types.AddonPreferences):
         name="System Prompt", default=DEFAULT_SYSTEM_PROMPT,
     )
 
+    bridge_autostart: BoolProperty(
+        name="Start Tailnet Bridge With Blender", default=False,
+        description="Run the remote bridge (loopback HTTP) as soon as this add-on loads",
+    )
+    bridge_port: IntProperty(
+        name="Bridge Port", default=8770, min=1024, max=65535,
+        description="Loopback port the bridge listens on; publish it with tailscale serve",
+    )
+    bridge_token: StringProperty(
+        name="Bridge Token", default="",
+        description="Bearer token required by the remote bridge (generated on first start)",
+    )
+
     def resolved_model(self):
         if self.model == "custom":
             return self.model_custom.strip()
@@ -171,6 +184,26 @@ class BlenderAgentPreferences(bpy.types.AddonPreferences):
         box = col.box()
         box.label(text="System Prompt", icon="TEXT")
         box.prop(self, "system_prompt", text="")
+
+        box = col.box()
+        box.label(text="Remote (Tailnet)", icon="NETWORK")
+        b = box.column(align=True)
+        from . import bridge as bridge_mod
+        if bridge_mod.is_running():
+            b.label(text="listening on %s" % bridge_mod.url(), icon="CHECKMARK")
+            b.label(text="token: %s" % (self.bridge_token or "-"))
+            row = b.row(align=True)
+            row.operator("blender_agent.bridge_copy", text="Copy URL", icon="COPY_ID").what = "url"
+            row.operator("blender_agent.bridge_copy", text="Copy Token", icon="COPY_ID").what = "token"
+        else:
+            b.label(text="bridge stopped", icon="PAUSE")
+        row = b.row(align=True)
+        row.operator("blender_agent.bridge_toggle", icon="PLAY" if not bridge_mod.is_running() else "PAUSE")
+        row.operator("blender_agent.bridge_token", text="", icon="FILE_REFRESH")
+        b.prop(self, "bridge_autostart")
+        b.prop(self, "bridge_port")
+        if bridge_mod.is_running():
+            b.label(text="publish: scripts/tailnet.sh publish")
 
         row = col.row(align=True)
         row.operator("blender_agent.add_workspace", icon="WORKSPACE")

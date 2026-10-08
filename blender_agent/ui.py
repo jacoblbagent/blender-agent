@@ -170,6 +170,16 @@ def _draw_panel(layout, context, compact=False):
     row.prop(wm, "agent_show_full", text="Full Output", toggle=True)
     row.prop(wm, "agent_show_tools", text="Tools", toggle=True)
 
+    from . import bridge as bridge_mod
+    if bridge_mod.is_running():
+        remote = col.row(align=True)
+        remote.label(text="Remote %s" % bridge_mod.url(), icon="NETWORK")
+        remote.operator("blender_agent.bridge_copy", text="", icon="COPY_ID").what = "url"
+        remote.operator("blender_agent.bridge_copy", text="", icon="KEYINGSET").what = "token"
+        remote.operator("blender_agent.bridge_toggle", text="", icon="PAUSE")
+    else:
+        col.operator("blender_agent.bridge_toggle", text="Serve On Tailnet", icon="NETWORK")
+
 
 class BLENDER_AGENT_PT_agent(Panel):
     bl_idname = "BLENDER_AGENT_PT_agent"
@@ -467,6 +477,57 @@ class BLENDER_AGENT_OT_quick_ask(Operator):
         return {"FINISHED"}
 
 
+class BLENDER_AGENT_OT_bridge_toggle(Operator):
+    bl_idname = "blender_agent.bridge_toggle"
+    bl_label = "Start/Stop Remote Bridge"
+    bl_description = "Serve Blender Agent on a loopback port so the tailnet can reach it"
+
+    def execute(self, context):
+        from . import bridge as bridge_mod
+        prefs = _prefs(context)
+        if bridge_mod.is_running():
+            ok, msg = bridge_mod.stop()
+        else:
+            bridge_mod.token(prefs)          # reuse the saved token; "New Bridge Token" rotates it
+            ok, msg = bridge_mod.start(prefs)
+        SESSION.record("info" if ok else "error", "Remote bridge: %s" % msg)
+        self.report({"INFO"} if ok else {"ERROR"}, msg)
+        redraw_all(force=True)
+        return {"FINISHED"} if ok else {"CANCELLED"}
+
+
+class BLENDER_AGENT_OT_bridge_token(Operator):
+    bl_idname = "blender_agent.bridge_token"
+    bl_label = "New Bridge Token"
+
+    def execute(self, context):
+        from . import bridge as bridge_mod
+        prefs = _prefs(context)
+        bridge_mod.set_token(prefs)
+        self.report({"INFO"}, "New bridge token generated")
+        redraw_all(force=True)
+        return {"FINISHED"}
+
+
+class BLENDER_AGENT_OT_bridge_copy(Operator):
+    bl_idname = "blender_agent.bridge_copy"
+    bl_label = "Copy Bridge Details"
+    bl_description = "Copy the bridge URL or token to the clipboard"
+
+    what: StringProperty(default="url")
+
+    def execute(self, context):
+        from . import bridge as bridge_mod
+        prefs = _prefs(context)
+        value = bridge_mod.url() if self.what == "url" else (prefs.bridge_token or "")
+        if not value:
+            self.report({"ERROR"}, "Nothing to copy yet")
+            return {"CANCELLED"}
+        context.window_manager.clipboard = value
+        self.report({"INFO"}, "Copied %s" % self.what)
+        return {"FINISHED"}
+
+
 class BLENDER_AGENT_OT_send_selection(Operator):
     bl_idname = "blender_agent.send_selection"
     bl_label = "Send Selection To Blender Agent"
@@ -493,6 +554,8 @@ classes = (
     BLENDER_AGENT_OT_open_key_page, BLENDER_AGENT_OT_model_browser,
     BLENDER_AGENT_OT_set_model, BLENDER_AGENT_OT_add_workspace,
     BLENDER_AGENT_OT_send_selection, BLENDER_AGENT_OT_quick_ask,
+    BLENDER_AGENT_OT_bridge_toggle, BLENDER_AGENT_OT_bridge_token,
+    BLENDER_AGENT_OT_bridge_copy,
 )
 
 
@@ -523,6 +586,21 @@ def _on_load(*_args):
         pass
 
 
+def _maybe_start_bridge():
+    """One-shot: honour the 'start with Blender' preference."""
+    try:
+        from . import bridge as bridge_mod
+        prefs = _prefs(bpy.context)
+        if prefs.bridge_autostart and not bridge_mod.is_running():
+            bridge_mod.token(prefs)          # reuse the saved token, never regenerate it
+            ok, msg = bridge_mod.start(prefs)
+            if not ok:
+                agent.SESSION.record("error", "Remote bridge: %s" % msg)
+    except Exception:  # noqa: BLE001 - never break startup
+        pass
+    return None
+
+
 def register_handlers():
     agent._redraw_cb = redraw_all
     openrouter.load_cache()
@@ -530,6 +608,10 @@ def register_handlers():
     _on_load()
     try:
         bpy.app.handlers.load_post.append(_on_load)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        bpy.app.timers.register(_maybe_start_bridge, first_interval=1.0)
     except Exception:  # noqa: BLE001
         pass
 
