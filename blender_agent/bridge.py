@@ -20,9 +20,10 @@ from urllib.parse import urlparse, parse_qs
 
 import bpy
 
-from . import agent, openrouter
+from . import agent, openrouter, shots
 
 DEFAULT_PORT = 8770
+TOKEN_FILE_ENV = "BLENDER_AGENT_TOKEN_FILE"
 
 _server = {"httpd": None, "thread": None, "port": None, "host": "127.0.0.1"}
 
@@ -41,13 +42,27 @@ def url(token=None, host=None):
 
 
 def token(prefs):
-    if not (prefs.bridge_token or "").strip():
-        prefs.bridge_token = secrets.token_urlsafe(24)
+    """The bridge token: preferences first, then a small file that survives restarts.
+
+    Blender resets an add-on's preferences when the add-on is re-registered, and the
+    add-on's host service stops Blender without saving preferences. Either way, a
+    token that lives only in prefs changes under the user and every link they saved
+    turns into a 401, so a generated token is pinned to disk as well.
+    """
+    if (prefs.bridge_token or "").strip():
+        return prefs.bridge_token
+    pinned = _read_pinned_token()
+    if pinned:
+        prefs.bridge_token = pinned
+        return pinned
+    prefs.bridge_token = secrets.token_urlsafe(24)
+    _pin_token(prefs.bridge_token)
     return prefs.bridge_token
 
 
 def new_token(prefs):
     prefs.bridge_token = secrets.token_urlsafe(24)
+    _pin_token(prefs.bridge_token)
     return prefs.bridge_token
 
 
@@ -55,7 +70,42 @@ def set_token(prefs, value=None):
     """Regenerate (or set) the bridge token and apply it to the live server."""
     prefs.bridge_token = value or secrets.token_urlsafe(24)
     _BridgeHandler.token = prefs.bridge_token
+    _pin_token(prefs.bridge_token)
     return prefs.bridge_token
+
+
+def _pinned_path():
+    override = os.environ.get(TOKEN_FILE_ENV)
+    if override:
+        return override
+    # user_resource(create=True) makes a *directory*, so join the file name onto it.
+    base = bpy.utils.user_resource("CONFIG", path="blender_agent", create=True)
+    return os.path.join(base, "bridge_token")
+
+
+def _read_pinned_token():
+    try:
+        with open(_pinned_path(), encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _pin_token(value):
+    """Write the token 0600, replacing the file atomically."""
+    path = _pinned_path()
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(value)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def _json_response(handler, code, payload):
@@ -74,6 +124,21 @@ def _html_response(handler, code, html):
     handler.send_header("Content-Type", "text/html; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Cache-Control", "no-store")
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _png_response(handler, path):
+    """Serve the screenshot. The URL carries a version, so it can be cached."""
+    try:
+        with open(path, "rb") as fh:
+            body = fh.read()
+    except OSError as exc:
+        return _json_response(handler, 404, {"error": "no screenshot (%s)" % exc})
+    handler.send_response(200)
+    handler.send_header("Content-Type", "image/png")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "private, max-age=300")
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -99,6 +164,7 @@ def _state():
                 objects.append(ctxmod.object_line(obj))
             except Exception:  # noqa: BLE001
                 objects.append("%s (%s)" % (obj.name, obj.type))
+        shot = shots.latest() or {}
         return {
             "blender": bpy.app.version_string,
             "file": bpy.data.filepath or "(unsaved)",
@@ -110,6 +176,9 @@ def _state():
             "model": prefs.resolved_model() if prefs else "",
             "usage": sess.usage,
             "pending_approval": bool(sess.pending_approval),
+            "shot": {"name": shot.get("name"), "label": shot.get("label"),
+                     "objects": shot.get("objects"), "time": shot.get("time"),
+                     "size": shot.get("size")} if shot else None,
             "transcript": [{"kind": t["kind"], "text": t["text"],
                             "tool": t.get("meta", {}).get("name"),
                             "ok": t.get("meta", {}).get("ok"),
@@ -189,6 +258,11 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             return _json_response(self, 200, _state())
         if path == "/api/models":
             return _json_response(self, 200, {"models": openrouter.models()})
+        if path == "/api/shot.png":
+            shot = shots.latest()
+            if not shot:
+                return _json_response(self, 404, {"error": "no screenshot yet"})
+            return _png_response(self, shot["path"])
         return _json_response(self, 404, {"error": "not found"})
 
     def do_POST(self):
@@ -220,6 +294,9 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         if path == "/api/stop":
             agent.run_on_main(agent.SESSION.cancel, timeout=30)
             return _json_response(self, 200, {"ok": True})
+        if path == "/api/shot":
+            ok, msg = agent.run_on_main(lambda: shots.capture(label="remote"), timeout=180)
+            return _json_response(self, 200 if ok else 409, {"ok": bool(ok), "message": msg})
         if path == "/api/clear":
             agent.run_on_main(agent.SESSION.clear, timeout=30)
             return _json_response(self, 200, {"ok": True})
@@ -276,6 +353,10 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:10px 12p
 #gate{display:none;padding:14px 12px;gap:8px;flex-direction:column;border-bottom:1px solid var(--line)}
 #gate.show{display:flex}
 #objs{color:var(--dim);font-size:12px;padding:6px 12px;border-bottom:1px solid var(--line);white-space:pre-wrap}
+#shotbox{display:none;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+#shotbox.show{display:block}
+#shot{width:100%;max-width:520px;display:block;border:1px solid var(--line);border-radius:4px;background:#0b0c0d}
+#shotcap{color:var(--dim);font-size:12px;margin-top:5px}
 @media (max-width:640px){#p,#token,#model{font-size:16px}}
 </style></head>
 <body>
@@ -293,11 +374,13 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:10px 12p
   <button id="save">Connect</button>
 </div>
 <div id="objs"></div>
+<div id="shotbox"><img id="shot" alt="Model screenshot"><div id="shotcap"></div></div>
 <div id="log"></div>
 <footer>
   <select id="model" title="Model"></select>
   <input id="p" placeholder="Ask Blender Agent&hellip;" autocomplete="off">
   <button id="send">Send</button>
+  <button id="snap" title="Screenshot the model">Shot</button>
 </footer>
 <script>
 const q = new URLSearchParams(location.search);
@@ -310,9 +393,11 @@ $('send').onclick = send;
 $('p').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 $('stop').onclick = () => api('/api/stop', {method:'POST'});
 $('clear').onclick = () => api('/api/clear', {method:'POST'}).then(tick);
+$('snap').onclick = () => api('/api/shot', {method:'POST'}).then(tick);
 $('model').onchange = () => api('/api/model', {method:'POST', headers:{'Content-Type':'application/json'},
   body: JSON.stringify({model: $('model').value})}).then(tick);
 let modelsLoaded = false;
+let lastShot = '';
 const notices = [];   // client-side messages that are not part of Blender's transcript
 function notice(text){
   notices.push(text);
@@ -339,6 +424,17 @@ async function tick(){
   const dot = $('dot'); dot.className = 'dot ' + (s.busy ? 'busy' : (s.status==='error'?'error':(s.status==='done'?'done':'')));
   $('meta').textContent = `${s.status}${s.detail?' - '+s.detail:''} | ${s.model||'no model'} | ${s.blender} | ${s.file}`;
   $('objs').textContent = 'scene ' + s.scene + ': ' + (s.objects||[]).length + ' objects\n' + (s.objects||[]).join('\n');
+  const sb = $('shotbox');
+  if (s.shot && s.shot.name) {
+    sb.classList.add('show');
+    if (s.shot.name !== lastShot) {
+      lastShot = s.shot.name;
+      $('shot').src = '/api/shot.png?token=' + encodeURIComponent(tok) + '&v=' + encodeURIComponent(s.shot.name);
+    }
+    $('shotcap').textContent = (s.shot.label || 'model') + ' | ' + ((s.shot.objects||[]).length) + ' objects | ' + (s.shot.time || '');
+  } else {
+    sb.classList.remove('show');
+  }
   const log = $('log'); const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 40;
   log.innerHTML = '';
   (s.transcript||[]).forEach(t => {

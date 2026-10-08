@@ -26,9 +26,9 @@ bl_info = {
 
 import importlib
 
-from . import preferences, openrouter, context, tools, agent, bridge, ui, workspace
+from . import preferences, openrouter, context, tools, agent, bridge, shots, ui, workspace
 
-_modules = (preferences, openrouter, context, tools, agent, bridge, ui, workspace)
+_modules = (preferences, openrouter, context, tools, agent, bridge, shots, ui, workspace)
 
 
 def register():

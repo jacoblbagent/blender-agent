@@ -78,6 +78,23 @@ the parts of the API the high-level tools do not cover.
 model as an image, so vision-capable models critique their own output instead of
 guessing. Disable with *Send Renders Back To The Model*.
 
+### You can see it too — the model screenshot
+
+After the agent changes the model, the panel shows a **Model Screenshot**: a fast
+Workbench render of the model (the objects the tool touched, falling back to the
+whole scene), auto-framed from a three-quarter view, with the objects' real
+material colours and no lights needed.
+
+- **Again** re-takes it, **Open** loads the full-size PNG into Blender's Image
+  Editor (or your OS viewer when no Image Editor is open).
+- Turn it off with *Screenshot After Each Build* in Agent Settings.
+- Shots accumulate in `CONFIG/blender_agent/shots/shot_NNNN.png` (960x540).
+- The camera it needs is temporary, and every render/shading setting and viewport
+  colour it touches is restored — a screenshot never changes how you render
+  afterwards, and never litters the scene.
+- Blender builds custom preview thumbnails at 32 px, so the sidebar shows a
+  thumbnail; the full-size image is one click away (or one URL, below).
+
 ### Safety
 
 - One undo step per tool call (labelled `Blender Agent: <tool>`) — the **Undo
@@ -153,10 +170,16 @@ phone or laptop while Blender keeps working on your desktop.
    `tailscale serve --bg --https=8770 http://127.0.0.1:8770` instead.
 
 What the page gives you: live status (Blender version, scene, object list with
-transforms, agent state), the running transcript, a model dropdown built from the
-live catalogue, Send/Stop/Clear, and inline errors (e.g. an unset API key). The
-same thing is available as JSON: `GET /api/status`, `GET /api/models`,
-`POST /api/ask {prompt}`, `POST /api/model {model}`, `POST /api/stop`, `POST /api/clear`.
+transforms, agent state), the running transcript, the model screenshot, a model
+dropdown built from the live catalogue, Send/Stop/Clear/Shot, and inline errors
+(e.g. an unset API key). The same thing is available as JSON: `GET /api/status`,
+`GET /api/models`, `GET /api/shot.png`, `POST /api/ask {prompt}`,
+`POST /api/model {model}`, `POST /api/shot`, `POST /api/stop`, `POST /api/clear`.
+
+The token is pinned to `CONFIG/blender_agent/bridge_token` (mode 0600) when it is
+generated or rotated. Blender resets an add-on's preferences when the add-on is
+re-registered, and the host service stops Blender without saving preferences, so a
+token kept only in prefs would silently change and break every saved link.
 
 Safety: the listener is loopback-only, `tailscale serve` is tailnet-only (never
 funnel), and every endpoint except `/healthz` and the static page needs the bearer
@@ -171,16 +194,18 @@ objects and populates the model dropdown from the live catalogue.
 ## Tests
 
 ```bash
-./tests/run_tests.sh        # 72 checks, headless, against a local mock OpenRouter
+./tests/run_tests.sh        # 95 checks, headless, against a local mock OpenRouter
 ```
 
 The mock server (`tests/mock_openrouter.py`) speaks real SSE and tool-call
 deltas, so the suite exercises the whole path: tool implementations against a
 real Blender scene, model catalogue + key validation, a two-turn agent loop in
 both blocking and streaming mode, image feedback (asserts a base64 data URL was
-sent back), HTTP error surfacing, cancellation, message trimming, undo, and the
-remote bridge (token enforcement, remote ask → tool call → real object created,
-remote model switching, web page served).
+sent back), model screenshots (framing, no leftover camera, restored render
+settings and viewport colours), HTTP error surfacing, cancellation, message
+trimming, undo, and the remote bridge (token enforcement and pinning, remote ask
+→ tool call → real object created, remote model switching, web page served, the
+screenshot endpoint's PNG and its 401 without a token).
 
 GUI checks (run separately, needs a display): workspace creation, a live streamed
 agent turn, one-step undo of all agent-created objects, and screenshots of the UI.

@@ -7,6 +7,7 @@ through ``run_on_main`` (drained by a bpy.app.timers callback, or manually by
 """
 
 import json
+import os
 import queue
 import threading
 import time
@@ -15,7 +16,7 @@ import traceback
 import bpy
 
 from . import context as ctxmod
-from . import openrouter, tools
+from . import openrouter, shots, tools
 
 MAX_TRANSCRIPT = 400
 
@@ -371,6 +372,7 @@ class Session:
         ok = not result.startswith("ERROR")
         self.record("tool", result, name=name, ok=ok, seconds=dt,
                     args=self._brief_args(name, args))
+        self._keep_screenshot(prefs, name, args, images, ok)
         content = result
         if images and prefs.vision_feedback:
             parts = [{"type": "text", "text": result}]
@@ -390,6 +392,29 @@ class Session:
             return json.dumps(args)[:180]
         except (TypeError, ValueError):
             return str(args)[:180]
+
+    def _keep_screenshot(self, prefs, name, args, images, ok):
+        """Keep the panel's model screenshot current. Never fails a turn."""
+        if not ok:
+            return
+        try:
+            if images:
+                path = next((p for p in images if p and os.path.exists(p)), None)
+                if path:
+                    run_on_main(lambda: shots.adopt(
+                        path, label=name, objects=shots.names_from_args(args)), timeout=60)
+                    return
+            if not getattr(prefs, "auto_screenshot", True):
+                return
+            if name not in shots.AUTO_TOOLS:
+                return
+            names = shots.names_from_args(args)
+            captured, msg = run_on_main(
+                lambda: shots.capture(label=name, objects=names), timeout=180)
+            if not captured:
+                self.record("info", "screenshot skipped: %s" % msg)
+        except Exception:  # noqa: BLE001 - a screenshot must never break a turn
+            pass
 
     def _request_approval(self, name, args):
         pending = {"tool": name, "args": args, "event": threading.Event(), "approved": False}

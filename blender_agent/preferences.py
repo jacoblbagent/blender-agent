@@ -103,6 +103,12 @@ class BlenderAgentPreferences(bpy.types.AddonPreferences):
         name="Messages Kept In Context", default=60, min=6, max=400,
         description="Trim older messages from the request payload (transcript stays visible)",
     )
+    auto_screenshot: BoolProperty(
+        name="Screenshot After Each Build",
+        default=True,
+        description="Render a quick viewport-style screenshot of the model after the "
+                    "agent changes it, and show it in the Agent panel",
+    )
     auto_workspace: BoolProperty(
         name="Create Agent Workspace On Start", default=True,
         description="Add a ready-made 'Agent' workspace (open sidebar, material shading) "
@@ -179,6 +185,7 @@ class BlenderAgentPreferences(bpy.types.AddonPreferences):
         b.prop(self, "undo_per_tool")
         b.prop(self, "confirm_code")
         b.prop(self, "vision_feedback")
+        b.prop(self, "auto_screenshot")
         b.prop(self, "auto_workspace")
 
         box = col.box()

@@ -1018,6 +1018,8 @@ def t_render_image(args):
     size = os.path.getsize(real) if os.path.exists(real) else 0
     if not size:
         return _err("render produced no file at %s" % real)
+    from . import shots
+    shots.adopt(real, label="render_image")
     return "rendered %s (%d KB) engine=%s %dx%d" % (
         real, size // 1024, scn.render.engine, scn.render.resolution_x, scn.render.resolution_y)
 
@@ -1058,6 +1060,8 @@ def t_render_preview_and_view(args):
     real = path
     if not os.path.exists(real):
         return _err("preview render failed (%s)" % real)
+    from . import shots
+    shots.adopt(real, label="preview")
     return {"text": "preview render of %s (camera %s) at %s - the image is attached, "
                     "look at it and fix problems" % (scn.name, scn.camera.name, real),
             "images": [real]}

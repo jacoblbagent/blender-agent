@@ -158,6 +158,33 @@ def _draw_transcript(layout, wm, limit):
         box.separator(factor=0.4)
 
 
+def _draw_shot(layout, context):
+    """The screenshot of the model the agent is building."""
+    from . import shots
+    shot = shots.latest()
+    box = layout.box()
+    head = box.row(align=True)
+    head.label(text="Model Screenshot", icon="IMAGE_DATA")
+    if shot:
+        head.label(text=shot["time"])
+    if not shot:
+        box.label(text="No screenshot yet.", icon="INFO")
+        box.operator("blender_agent.screenshot_model", text="Screenshot Model",
+                     icon="RENDER_STILL")
+        return
+    icon = shots.icon_id()
+    if icon:
+        row = box.row(align=True)
+        row.alignment = "CENTER"
+        row.template_icon(icon_value=icon, scale=shots.THUMB_SCALE)
+    count = len(shot["objects"])
+    box.label(text="%s - %d object%s" % (shot["name"], count,
+                                         "" if count == 1 else "s"))
+    row = box.row(align=True)
+    row.operator("blender_agent.screenshot_model", text="Again", icon="RENDER_STILL")
+    row.operator("blender_agent.open_screenshot", text="Open", icon="FILE_IMAGE")
+
+
 def _draw_panel(layout, context, transcript_limit=None):
     wm = context.window_manager
     prefs = _prefs(context)
@@ -180,6 +207,8 @@ def _draw_panel(layout, context, transcript_limit=None):
         row.operator("blender_agent.send", icon="PLAY")
     row.operator("blender_agent.clear_history", text="", icon="TRASH")
     row.operator("blender_agent.undo_last", text="", icon="LOOP_BACK")
+
+    _draw_shot(layout, context)
 
     if SESSION.pending_approval:
         warn = layout.box()
@@ -530,6 +559,32 @@ class BLENDER_AGENT_OT_quick_ask(Operator):
         return {"FINISHED"}
 
 
+class BLENDER_AGENT_OT_screenshot(Operator):
+    bl_idname = "blender_agent.screenshot_model"
+    bl_label = "Screenshot Model"
+    bl_description = "Render a quick screenshot of the model and show it in the panel"
+
+    def execute(self, context):
+        from . import shots
+        ok, msg = shots.capture(label="manual")
+        SESSION.record("info" if ok else "error", "Model screenshot: %s" % msg)
+        self.report({"INFO"} if ok else {"ERROR"}, msg)
+        redraw_all(force=True)
+        return {"FINISHED"} if ok else {"CANCELLED"}
+
+
+class BLENDER_AGENT_OT_open_shot(Operator):
+    bl_idname = "blender_agent.open_screenshot"
+    bl_label = "Open Screenshot"
+    bl_description = "Open the model screenshot full size"
+
+    def execute(self, context):
+        from . import shots
+        ok, msg = shots.open_in_editor()
+        self.report({"INFO"} if ok else {"ERROR"}, msg)
+        return {"FINISHED"} if ok else {"CANCELLED"}
+
+
 class BLENDER_AGENT_OT_bridge_toggle(Operator):
     bl_idname = "blender_agent.bridge_toggle"
     bl_label = "Start/Stop Remote Bridge"
@@ -608,6 +663,7 @@ classes = (
     BLENDER_AGENT_OT_set_model, BLENDER_AGENT_OT_add_workspace,
     BLENDER_AGENT_OT_send_selection, BLENDER_AGENT_OT_quick_ask,
     BLENDER_AGENT_OT_open_panel,
+    BLENDER_AGENT_OT_screenshot, BLENDER_AGENT_OT_open_shot,
     BLENDER_AGENT_OT_bridge_toggle, BLENDER_AGENT_OT_bridge_token,
     BLENDER_AGENT_OT_bridge_copy,
 )

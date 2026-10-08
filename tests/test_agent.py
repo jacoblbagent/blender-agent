@@ -68,6 +68,8 @@ def main():
     check("operator quick_ask", hasattr(bpy.ops.blender_agent, "quick_ask"))
     check("operator open_panel", hasattr(bpy.ops.blender_agent, "open_panel"))
     check("operator add_workspace", hasattr(bpy.ops.blender_agent, "add_workspace"))
+    check("operator screenshot_model", hasattr(bpy.ops.blender_agent, "screenshot_model"))
+    check("operator open_screenshot", hasattr(bpy.ops.blender_agent, "open_screenshot"))
     check("preferences registered", "blender_agent" in bpy.context.preferences.addons)
     from blender_agent import ui as ui_mod
     icon_bad = ui_mod.icon_problems()
@@ -162,6 +164,50 @@ def main():
     preview = out["images"][0] if isinstance(out, dict) and out.get("images") else None
     check("preview file exists", preview and os.path.exists(preview), preview)
     check("render settings restored", bpy.context.scene.render.resolution_x == 240)
+
+    heading("3b. model screenshot")
+    from blender_agent import shots
+    ok_s, msg_s = shots.capture(label="test")
+    current = shots.latest() or {}
+    check("screenshot rendered", ok_s and os.path.exists(current.get("path", "")), msg_s)
+    check("screenshot registered for the panel",
+          bool(current.get("objects")) and str(current.get("name", "")).endswith(".png"),
+          current.get("name"))
+    check("screenshot frames the model's objects",
+          current.get("objects") and all(n in bpy.context.scene.objects
+                                          for n in current["objects"]),
+          current.get("objects"))
+    check("screenshot leaves no camera behind",
+          "AgentShotCam" not in bpy.context.scene.objects
+          and not any(c.name.startswith("AgentShot") for c in bpy.data.cameras),
+          [o.name for o in bpy.context.scene.objects])
+    check("screenshot restores render settings",
+          bpy.context.scene.render.engine == "CYCLES"
+          and bpy.context.scene.render.resolution_x == 240,
+          (bpy.context.scene.render.engine, bpy.context.scene.render.resolution_x))
+    check("screenshot can adopt an existing render",
+          shots.adopt(preview, label="adopted")[0]
+          and (shots.latest() or {}).get("path") == preview)
+    check("unknown targets fall back to the whole scene",
+          shots.capture(label="named", objects=["NoSuchObject"])[0])
+    check("object names come from the tool arguments",
+          shots.names_from_args({"objects": [{"name": "A"}, {"name": "B"}]}) == ["A", "B"]
+          and shots.names_from_args({"targets": "Cube"}) == ["Cube"])
+    meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    framed = shots._framing_targets(meshes)
+    check("a huge ground plane does not shrink the model",
+          any(o.name == "Ground" for o in meshes)
+          and not any(o.name == "Ground" for o in framed),
+          [o.name for o in framed])
+    red = bpy.data.objects["AgentCube"].data.materials[0]
+    colour = shots._principled_colour(red)
+    before_colour = tuple(red.diffuse_color)
+    shots.capture(label="colour")
+    check("the shot picks up the material's base colour",
+          colour and abs(colour[0] - 0.8) < 1e-6 and abs(colour[1] - 0.05) < 1e-6,
+          colour)
+    check("the viewport colour is put back afterwards",
+          tuple(red.diffuse_color) == before_colour, (before_colour, tuple(red.diffuse_color)))
 
     heading("4. undo integration")
     n_before = len(bpy.context.scene.objects)
@@ -268,6 +314,11 @@ def main():
 
     prefs.bridge_port = 8771
     bridge.set_token(prefs, "test-token-123")
+    check("bridge token is pinned for restarts",
+          bridge._read_pinned_token() == "test-token-123", bridge._read_pinned_token())
+    prefs.bridge_token = ""
+    check("a reset preference recovers the pinned token",
+          bridge.token(prefs) == "test-token-123", prefs.bridge_token)
     ok_b, msg_b = bridge.start(prefs)
     check("bridge started on loopback", ok_b and bridge.is_running(), msg_b)
 
@@ -285,6 +336,18 @@ def main():
             return exc.code, exc.read().decode()
         except Exception as exc:  # noqa: BLE001
             return 0, str(exc)
+
+    def get_bytes(path, token="test-token-123"):
+        req = urllib.request.Request(base + path)
+        if token:
+            req.add_header("Authorization", "Bearer " + token)
+        try:
+            with urllib.request.urlopen(req, timeout=25) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+        except Exception as exc:  # noqa: BLE001
+            return 0, str(exc).encode()
 
     def post(path, payload, token="test-token-123"):
         req = urllib.request.Request(base + path, data=json.dumps(payload).encode())
@@ -318,6 +381,9 @@ def main():
                     break
             time.sleep(0.3)
         box["stop"] = post("/api/stop", {})
+        box["shot"] = post("/api/shot", {})
+        box["shotpng"] = get_bytes("/api/shot.png")
+        box["shotpng_noauth"] = get_bytes("/api/shot.png", token=None)
         box["hashes"] = get("/api/status")
 
     worker = threading.Thread(target=client, name="bridge-test-client", daemon=True)
@@ -353,6 +419,16 @@ def main():
     check("used the remotely selected model", st.get("model") == "mock/scripter-2",
           st.get("model"))
     check("stop endpoint answers", box.get("stop", (0, {}))[0] == 200)
+    check("screenshot can be taken remotely", box.get("shot", (0, {}))[0] == 200
+          and box["shot"][1].get("ok"), box.get("shot"))
+    png_status, png_body = box.get("shotpng", (0, b""))
+    check("screenshot is served as a PNG", png_status == 200
+          and png_body[:8] == b"\x89PNG\r\n\x1a\n", (png_status, png_body[:8]))
+    check("screenshot endpoint requires a token",
+          box.get("shotpng_noauth", (0, b""))[0] == 401)
+    final = json.loads(box.get("hashes", (0, "{}"))[1] or "{}")
+    check("status carries the screenshot", str((final.get("shot") or {}).get("name", "")
+                                               ).endswith(".png"), final.get("shot"))
     ok_s, msg_s = bridge.stop()
     check("bridge stops cleanly", ok_s and not bridge.is_running(), msg_s)
 
