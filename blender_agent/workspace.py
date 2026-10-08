@@ -35,6 +35,30 @@ def _prepare_screen(screen):
     return False
 
 
+def _prepare_current_screen():
+    """One-shot: re-apply sidebar/shading once the new workspace is on screen.
+
+    Blender resets region visibility while activating a freshly duplicated
+    workspace, so a single synchronous pass does not stick.
+    """
+    try:
+        window = bpy.context.window
+        if window is not None and window.screen is not None:
+            _prepare_screen(window.screen)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def schedule_prepare(delay=0.5):
+    if bpy.app.background:
+        return
+    try:
+        bpy.app.timers.register(_prepare_current_screen, first_interval=delay)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def add_workspace(context=None):
     """Create (or reuse) an 'Agent' workspace.
 
@@ -56,6 +80,7 @@ def add_workspace(context=None):
                 _prepare_screen(window.screen)
         except Exception as exc:  # noqa: BLE001
             return False, "Workspace switch failed: %s" % exc
+        schedule_prepare(0.25)
         return True, "Workspace '%s' already exists" % WORKSPACE_NAME
 
     screen = window.screen
@@ -95,5 +120,6 @@ def add_workspace(context=None):
         pass
     if window.screen is not None:
         _prepare_screen(window.screen)
+    schedule_prepare()
     return True, "Workspace '%s' ready (copy of %s) - N sidebar > Agent tab" % (
         WORKSPACE_NAME, original_name)

@@ -27,6 +27,7 @@ PY
 done
 
 MOCK_URL="http://127.0.0.1:$PORT/v1" MOCK_LOG="$LOG" MOCK_RESULT="$RESULT" \
+  BLENDER_AGENT_NO_MODEL_CACHE=1 \
   blender -b --python-expr "
 import bpy
 bpy.ops.preferences.addon_enable(module='blender_agent')

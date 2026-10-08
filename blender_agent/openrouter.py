@@ -75,6 +75,12 @@ def model_meta(model_id):
         return _meta_by_id.get(model_id)
 
 
+def _cache_enabled():
+    """Tests set BLENDER_AGENT_NO_MODEL_CACHE so a mock catalogue never lands in
+    the real user config directory."""
+    return not os.environ.get("BLENDER_AGENT_NO_MODEL_CACHE")
+
+
 def set_models(raw_entries):
     global _models, _meta_by_id
     norm = [_normalise(e) for e in raw_entries if e.get("id")]
@@ -82,6 +88,8 @@ def set_models(raw_entries):
     with _lock:
         _models = norm
         _meta_by_id = {m["id"]: m for m in norm}
+    if not _cache_enabled():
+        return
     try:
         with open(_cache_file(), "w") as fh:
             json.dump(norm, fh)
