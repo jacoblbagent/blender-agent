@@ -174,6 +174,7 @@ def _state():
             "detail": sess.status_detail,
             "busy": sess.busy(),
             "model": prefs.resolved_model() if prefs else "",
+            "key_set": bool(prefs and (prefs.api_key or "").strip()),
             "usage": sess.usage,
             "pending_approval": bool(sess.pending_approval),
             "shot": {"name": shot.get("name"), "label": shot.get("label"),
@@ -352,11 +353,15 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:10px 12p
 #token{width:100%;background:#0f1012;color:var(--fg);border:1px solid var(--line);padding:10px 12px}
 #gate{display:none;padding:14px 12px;gap:8px;flex-direction:column;border-bottom:1px solid var(--line)}
 #gate.show{display:flex}
+#gatehint{color:var(--dim);font-size:12.5px;line-height:1.4}
+#gateerr{color:var(--bad);font-size:12.5px;min-height:1em}
 #objs{color:var(--dim);font-size:12px;padding:6px 12px;border-bottom:1px solid var(--line);white-space:pre-wrap}
 #shotbox{display:none;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel)}
 #shotbox.show{display:block}
 #shot{width:100%;max-width:520px;display:block;border:1px solid var(--line);border-radius:4px;background:#0b0c0d}
 #shotcap{color:var(--dim);font-size:12px;margin-top:5px}
+#setup{display:none;padding:8px 12px;border-bottom:1px solid var(--line);background:#2a1c1c;color:#f7c9c9;font-size:12.5px;line-height:1.45}
+#setup.show{display:block}
 @media (max-width:640px){#p,#token,#model{font-size:16px}}
 </style></head>
 <body>
@@ -370,10 +375,13 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:10px 12p
   <button id="stop" title="Stop the agent">Stop</button>
 </header>
 <div id="gate">
-  <input id="token" placeholder="Bridge token (from Blender: Agent panel)" autocomplete="off">
+  <div id="gatehint">Needs the bridge token from Blender: 3D viewport &rsaquo; N &rsaquo; Agent tab &rsaquo; the key icon on the "Remote" row (or Edit &rsaquo; Preferences &rsaquo; Add-ons &rsaquo; Blender Agent &rsaquo; Remote).</div>
+  <input id="token" placeholder="Bridge token" autocomplete="off">
   <button id="save">Connect</button>
+  <div id="gateerr"></div>
 </div>
 <div id="objs"></div>
+<div id="setup"></div>
 <div id="shotbox"><img id="shot" alt="Model screenshot"><div id="shotcap"></div></div>
 <div id="log"></div>
 <footer>
@@ -387,8 +395,16 @@ const q = new URLSearchParams(location.search);
 let tok = q.get('token') || localStorage.getItem('ba_token') || '';
 const $ = id => document.getElementById(id);
 const api = (path, opts={}) => fetch(path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok), opts);
-function showGate(on){ $('gate').classList.toggle('show', on); if(on) $('token').value = tok; }
-$('save').onclick = () => { tok = $('token').value.trim(); localStorage.setItem('ba_token', tok); showGate(false); tick(); };
+function showGate(on, message){
+  $('gate').classList.toggle('show', on);
+  $('gateerr').textContent = message || '';
+  if (on && !$('token').value) $('token').value = tok;
+}
+$('save').onclick = () => {
+  const v = $('token').value.trim();
+  if (!v) { showGate(true, 'Enter the bridge token first.'); return; }
+  tok = v; localStorage.setItem('ba_token', tok); showGate(false); tick();
+};
 $('send').onclick = send;
 $('p').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 $('stop').onclick = () => api('/api/stop', {method:'POST'});
@@ -409,7 +425,7 @@ async function send(){
   $('p').value = '';
   const r = await api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({prompt: v})});
-  if (r.status === 401) { showGate(true); return; }
+  if (r.status === 401) { showGate(true, 'Token rejected - copy the current one from Blender (Agent panel, key icon next to Remote).'); return; }
   const j = await r.json().catch(()=>({}));
   if (j.error) { notice(j.error); return; }
   notices.length = 0;
@@ -418,12 +434,23 @@ async function send(){
 async function tick(){
   let r;
   try { r = await api('/api/status'); } catch(e) { $('meta').textContent='bridge unreachable'; return; }
-  if (r.status === 401) { showGate(true); $('meta').textContent='token required'; return; }
+  if (r.status === 401) { showGate(true, 'Token rejected - copy the current one from Blender (Agent panel, key icon next to Remote).'); $('meta').textContent='token required'; return; }
   showGate(false);
   const s = await r.json();
   const dot = $('dot'); dot.className = 'dot ' + (s.busy ? 'busy' : (s.status==='error'?'error':(s.status==='done'?'done':'')));
   $('meta').textContent = `${s.status}${s.detail?' - '+s.detail:''} | ${s.model||'no model'} | ${s.blender} | ${s.file}`;
   $('objs').textContent = 'scene ' + s.scene + ': ' + (s.objects||[]).length + ' objects\n' + (s.objects||[]).join('\n');
+  const setup = $('setup');
+  const missing = [];
+  if (!s.key_set) missing.push('OpenRouter API key');
+  if (!s.model) missing.push('model');
+  if (missing.length) {
+    setup.classList.add('show');
+    setup.textContent = 'Nothing can be sent yet: ' + missing.join(' and no ') +
+      ' set in Blender. Open Edit > Preferences > Add-ons > Blender Agent, add the key and pick a model, then reload this page.';
+  } else {
+    setup.classList.remove('show');
+  }
   const sb = $('shotbox');
   if (s.shot && s.shot.name) {
     sb.classList.add('show');

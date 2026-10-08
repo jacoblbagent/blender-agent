@@ -409,6 +409,7 @@ def main():
           and box["ask"][1].get("ok"), box.get("ask"))
     st = box.get("status") or {}
     check("remote turn completed", st.get("status") == "done", st.get("status"))
+    check("status reports whether a key is set", "key_set" in st, sorted(st.keys())[:8])
     check("bridge report includes the live scene",
           any("BridgeSphere" in o for o in st.get("objects") or []),
           [o for o in (st.get("objects") or []) if "Bridge" in o])
