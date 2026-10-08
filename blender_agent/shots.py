@@ -91,17 +91,33 @@ def _redraw_once():
     return None
 
 
-def _kick_redraw(delays=(0.3, 0.9)):
-    """Blender builds a preview lazily, so the first draw after a capture still
-    shows a placeholder. Two cheap redraws shortly after make the shot appear
-    instead of waiting for the next unrelated redraw."""
-    if bpy.app.background:
+# Blender decodes and downsamples the PNG in a background job, so the thumbnail
+# only appears after it finishes - a couple of redraws spread over the first few
+# seconds keep the panel from sitting on the placeholder until the next redraw
+# that happens to come from somewhere else.
+_REDRAW_DELAYS = (0.4, 1.2, 2.5, 4.5)
+_redraw_chain = [False]
+
+
+def _next_redraw(delays):
+    _redraw_once()
+    if not delays:
+        _redraw_chain[0] = False
+        return None
+    try:
+        bpy.app.timers.register(lambda: _next_redraw(delays[1:]),
+                                first_interval=delays[0])
+    except Exception:  # noqa: BLE001
+        _redraw_chain[0] = False
+    return None
+
+
+def _kick_redraw():
+    """Ask for a few redraws so a fresh screenshot appears on its own."""
+    if bpy.app.background or _redraw_chain[0]:
         return
-    for delay in delays:
-        try:
-            bpy.app.timers.register(_redraw_once, first_interval=delay)
-        except Exception:  # noqa: BLE001
-            pass
+    _redraw_chain[0] = True
+    _next_redraw(list(_REDRAW_DELAYS))
 
 
 def _adopt(path, label, objects):
