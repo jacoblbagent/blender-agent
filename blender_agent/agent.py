@@ -101,6 +101,30 @@ def _stamp():
     return time.strftime("%H:%M:%S")
 
 
+def _text_of(message):
+    """The text of a message whose content may be a multimodal parts list."""
+    content = message.get("content")
+    if isinstance(content, list):
+        return next((p.get("text") for p in content if p.get("type") == "text"), "")
+    return content or ""
+
+
+def images_supported(prefs):
+    """(ok, reason): can the selected model accept image input?
+
+    An unknown model (no catalogue entry, e.g. a custom id) is allowed through -
+    we would rather let the provider decide than block a working setup.
+    """
+    model = prefs.resolved_model()
+    meta = openrouter.model_meta(model)
+    if not meta:
+        return True, ""
+    if "image" in (meta.get("modalities") or "").lower():
+        return True, ""
+    return False, ("%s is a text-only model - pick a vision model to send a photo"
+                   % (model or "the selected model"))
+
+
 class Session:
     """Live agent conversation. Single instance, module-level (SESSION)."""
 
@@ -114,6 +138,7 @@ class Session:
         self.error = ""
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
         self.last_step = 0
+        self.last_send = None          # {"text", "images"} - so Retry keeps the photo
         self.pending_approval = None   # {"tool":..,"args":..,"event":Event,"approved":bool}
         self.abort_box = {"close": None}   # live HTTP response, so Stop is instant
         self._lock = threading.RLock()
@@ -160,6 +185,7 @@ class Session:
             self.transcript = []
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
         self.error = ""
+        self.last_send = None
         self.set_status("idle")
 
     def resolve_approval(self, approved):
@@ -194,18 +220,36 @@ class Session:
         msgs.extend(self._trim(prefs))
         return msgs
 
-    def send(self, user_text, prefs):
+    def send(self, user_text, prefs, images=None):
         user_text = (user_text or "").strip()
-        if not user_text:
+        images = [p for p in (images or []) if p and os.path.exists(p)]
+        if not user_text and not images:
             return False
         if self.busy():
             self.record("error", "Agent is already working - press Stop first.")
             return False
+        if images:
+            ok, why = images_supported(prefs)
+            if not ok:
+                self.record("error", why)
+                return False
         self.cancel_flag.clear()
         self.error = ""
+        content = user_text
+        if images:
+            # A multimodal user turn: the text plus one image_url part per photo.
+            content = [{"type": "text",
+                        "text": user_text or "Look at the attached photo."}]
+            for path in images:
+                part = openrouter.image_part(path)
+                if part:
+                    content.append(part)
         with self._lock:
-            self.messages.append({"role": "user", "content": user_text})
-        self.record("user", user_text)
+            self.messages.append({"role": "user", "content": content})
+        self.last_send = {"text": user_text, "images": list(images)}
+        files = [os.path.basename(p) for p in images]
+        self.record("user", user_text or ("(photo)" if len(files) == 1 else "(photos)"),
+                    images=len(files), files=files)
         try:
             payload = self._payload(prefs)
         except Exception:  # noqa: BLE001
@@ -222,13 +266,19 @@ class Session:
         with self._lock:
             while self.messages and self.messages[-1]["role"] != "user":
                 self.messages.pop()
-        last = next((m["content"] for m in reversed(self.messages) if m["role"] == "user"), "")
+        last = self.last_send or {}
+        if not self.messages:
+            last = {}
         if not last:
+            message = next((m for m in reversed(self.messages) if m["role"] == "user"), None)
+            last = {"text": _text_of(message or {}), "images": []}
+        text = (last.get("text") or "").strip()
+        if not text and not last.get("images"):
             return False
         with self._lock:
             self.messages = self.messages[:-1]
         self.transcript = [t for t in self.transcript if t["kind"] != "error"]
-        return self.send(last, prefs)
+        return self.send(text, prefs, images=last.get("images"))
 
     # -------------------------------------------------------------- worker --
     def _worker(self, prefs, payload):

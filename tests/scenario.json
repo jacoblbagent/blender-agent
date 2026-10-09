@@ -13,5 +13,9 @@
 
   {"tool_calls": [{"name": "create_objects", "arguments": {"objects": [
       {"type": "sphere", "name": "BridgeSphere", "radius": 1.0, "location": [0, 0, 1]}]}}]},
-  {"content": "Added BridgeSphere via the remote bridge."}
+  {"content": "Added BridgeSphere via the remote bridge."},
+
+  {"content": "I can see the photo you pasted."},
+
+  {"content": "Looking at the pasted photo, it reads as a wide-angle shot."}
 ]

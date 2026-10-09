@@ -383,15 +383,19 @@ def _blocking_once(requests, url, headers, payload, prefs):
            "usage": data.get("usage")}
 
 
+MIME_BY_EXT = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp",
+               "gif": "image/gif"}
+
+
 def image_part(path, max_bytes=4_500_000):
-    """Encode a PNG/JPG as an OpenRouter image_url content part."""
+    """Encode a PNG/JPG/WebP/GIF as an OpenRouter image_url content part."""
     try:
         with open(path, "rb") as fh:
             blob = fh.read(max_bytes)
-    except OSError as exc:
+    except OSError:
         return None
     ext = os.path.splitext(path)[1].lower().lstrip(".") or "png"
-    mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+    mime = MIME_BY_EXT.get(ext, "image/png")
     return {
         "type": "image_url",
         "image_url": {"url": "data:%s;base64,%s" % (mime, base64.b64encode(blob).decode())},

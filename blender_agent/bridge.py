@@ -21,7 +21,7 @@ from urllib.parse import urlparse, parse_qs
 
 import bpy
 
-from . import agent, openrouter, shots
+from . import agent, attachments, openrouter, shots
 
 DEFAULT_PORT = 8770
 TOKEN_FILE_ENV = "BLENDER_AGENT_TOKEN_FILE"
@@ -210,15 +210,23 @@ def _html_response(handler, code, html):
 
 def _png_response(handler, path):
     """Serve the screenshot. The URL carries a version, so it can be cached."""
+    return _image_response(handler, path, cache="private, max-age=300")
+
+
+def _image_response(handler, path, cache="private, max-age=600"):
+    """Serve an image file (screenshot or a pasted photo)."""
     try:
         with open(path, "rb") as fh:
             body = fh.read()
     except OSError as exc:
-        return _json_response(handler, 404, {"error": "no screenshot (%s)" % exc})
+        return _json_response(handler, 404, {"error": "no image (%s)" % exc})
+    ext = os.path.splitext(path)[1].lower()
+    ctype = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp",
+             "gif": "image/gif"}.get(ext.lstrip("."), "image/png")
     handler.send_response(200)
-    handler.send_header("Content-Type", "image/png")
+    handler.send_header("Content-Type", ctype)
     handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Cache-Control", "private, max-age=300")
+    handler.send_header("Cache-Control", cache)
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -263,6 +271,7 @@ def _state():
             "transcript": [{"kind": t["kind"], "text": t["text"],
                             "tool": t.get("meta", {}).get("name"),
                             "ok": t.get("meta", {}).get("ok"),
+                            "images": t.get("meta", {}).get("files") or [],
                             "time": t["time"]}
                            for t in sess.transcript[-40:]],
         }
@@ -345,6 +354,11 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             if not shot:
                 return _json_response(self, 404, {"error": "no screenshot yet"})
             return _png_response(self, shot["path"])
+        if path.startswith("/api/paste/"):
+            stored = attachments.resolve(path[len("/api/paste/"):])
+            if not stored:
+                return _json_response(self, 404, {"error": "no such photo"})
+            return _image_response(self, stored)
         return _json_response(self, 404, {"error": "not found"})
 
     def do_POST(self):
@@ -365,13 +379,21 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/ask":
             prompt = (body.get("prompt") or "").strip()
-            if not prompt:
-                return _json_response(self, 400, {"error": "prompt required"})
+            images, errors = attachments.save_many(body.get("images") or [])
+            if not prompt and not images:
+                return _json_response(self, 400, {"error": "prompt or a pasted photo required"})
+            if errors and not images:
+                return _json_response(self, 400, {"error": "; ".join(errors)})
             if not (prefs.api_key or "").strip():
                 return _json_response(self, 409, {"error": "no OpenRouter API key set in Blender"})
+            if images:
+                ok_img, why = agent.images_supported(prefs)
+                if not ok_img:
+                    return _json_response(self, 409, {"error": why})
             started = agent.run_on_main(
-                lambda: agent.SESSION.send(prompt, prefs), timeout=60)
-            return _json_response(self, 200, {"ok": bool(started),
+                lambda: agent.SESSION.send(prompt, prefs, images=images), timeout=60)
+            return _json_response(self, 200, {"ok": bool(started), "images": len(images),
+                                              "errors": errors,
                                               "busy": agent.SESSION.busy()})
         if path == "/api/stop":
             agent.run_on_main(agent.SESSION.cancel, timeout=30)
@@ -444,6 +466,13 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:10px 12p
 #shotcap{color:var(--dim);font-size:12px;margin-top:5px;text-align:center}
 #setup{display:none;padding:8px 12px;border-bottom:1px solid var(--line);background:#2a1c1c;color:#f7c9c9;font-size:12.5px;line-height:1.45;flex:none}
 #setup.show{display:block}
+#pastes{display:none;gap:8px;padding:8px 12px;border-top:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap;align-items:center}
+#pastes.show{display:flex}
+#pastes .cap{color:var(--dim);font-size:12px;flex:0 0 100%}
+.chip{position:relative;width:62px;height:62px;border:1px solid var(--line);border-radius:4px;overflow:hidden;background:#0b0c0d;flex:none}
+.chip img{width:100%;height:100%;object-fit:cover;display:block}
+.chip button{position:absolute;top:2px;right:2px;padding:0 5px;font-size:12px;line-height:15px;background:rgba(0,0,0,.7);border-color:transparent}
+img.pasted{display:block;margin-top:6px;max-width:100%;max-height:220px;border:1px solid var(--line);border-radius:4px}
 @media (max-width:640px){#p,#token,#model{font-size:16px}}
 @media (max-height:520px){#objs{max-height:12vh}#shot{max-height:24vh}}
 </style></head>
@@ -467,10 +496,13 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:10px 12p
 <div id="setup"></div>
 <div id="shotbox"><img id="shot" alt="Model screenshot"><div id="shotcap"></div></div>
 <div id="log"></div>
+<div id="pastes"></div>
+<input type="file" id="pick" accept="image/*" multiple hidden>
 <footer>
   <select id="model" title="Model"></select>
   <input id="p" placeholder="Ask Blender Agent&hellip;" autocomplete="off">
   <button id="send">Send</button>
+  <button id="photo" title="Attach a photo (or just paste one)">Photo</button>
   <button id="snap" title="Screenshot the model">Shot</button>
 </footer>
 <script>
@@ -493,6 +525,57 @@ $('p').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 $('stop').onclick = () => api('/api/stop', {method:'POST'});
 $('clear').onclick = () => api('/api/clear', {method:'POST'}).then(tick);
 $('snap').onclick = () => api('/api/shot', {method:'POST'}).then(tick);
+// ---- pasted photos: a reference for the agent's eyes ----------------------
+let pending = [];   // [{name, data}] waiting to be sent with the next message
+const pasteBox = $('pastes');
+function addPhoto(file){
+  if (!file || !file.type || file.type.indexOf('image/') !== 0) return false;
+  const reader = new FileReader();
+  reader.onload = () => {
+    pending.push({name: file.name || 'pasted.png', data: reader.result});
+    renderPhotos();
+  };
+  reader.readAsDataURL(file);
+  return true;
+}
+function renderPhotos(){
+  pasteBox.innerHTML = '';
+  pasteBox.classList.toggle('show', pending.length > 0);
+  if (!pending.length) return;
+  const cap = document.createElement('div'); cap.className = 'cap';
+  cap.textContent = pending.length === 1 ? '1 photo attached - press Send, or paste another'
+                                         : pending.length + ' photos attached';
+  pasteBox.appendChild(cap);
+  pending.forEach((p, i) => {
+    const chip = document.createElement('div'); chip.className = 'chip';
+    const img = document.createElement('img'); img.src = p.data; img.alt = p.name;
+    const drop = document.createElement('button'); drop.textContent = 'x'; drop.title = 'Remove';
+    drop.onclick = () => { pending.splice(i, 1); renderPhotos(); };
+    chip.appendChild(img); chip.appendChild(drop); pasteBox.appendChild(chip);
+  });
+}
+document.addEventListener('paste', e => {
+  const dt = e.clipboardData;
+  if (!dt) return;
+  let files = Array.from(dt.files || []);
+  if (!files.length) {
+    for (const item of (dt.items || [])) {
+      if (item.kind === 'file' && item.type && item.type.indexOf('image/') === 0) {
+        const f = item.getAsFile(); if (f) files.push(f);
+      }
+    }
+  }
+  const images = files.filter(f => f.type && f.type.indexOf('image/') === 0);
+  if (!images.length) return;          // let normal text paste through
+  e.preventDefault();
+  images.forEach(addPhoto);
+  $('p').focus();
+});
+$('photo').onclick = () => $('pick').click();
+$('pick').onchange = () => {
+  Array.from($('pick').files || []).forEach(addPhoto);
+  $('pick').value = '';
+};
 $('model').onchange = () => api('/api/model', {method:'POST', headers:{'Content-Type':'application/json'},
   body: JSON.stringify({model: $('model').value})}).then(tick);
 let modelsLoaded = false;
@@ -504,13 +587,17 @@ function notice(text){
   tick();
 }
 async function send(){
-  const v = $('p').value.trim(); if(!v) return;
+  const v = $('p').value.trim();
+  if (!v && !pending.length) return;
+  const images = pending.map(p => ({name: p.name, data: p.data}));
   $('p').value = '';
   const r = await api('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({prompt: v})});
+    body: JSON.stringify({prompt: v, images: images})});
   if (r.status === 401) { showGate(true, 'Token rejected - copy the current one from Blender (Agent panel, key icon next to Remote).'); return; }
   const j = await r.json().catch(()=>({}));
   if (j.error) { notice(j.error); return; }
+  pending = []; renderPhotos();     // photos were accepted, clear the strip
+  if (j.errors && j.errors.length) notice('Some photos were skipped: ' + j.errors.join('; '));
   notices.length = 0;
   tick();
 }
@@ -552,7 +639,13 @@ async function tick(){
     const who = document.createElement('div'); who.className = 'who';
     who.textContent = t.tool ? (t.tool + (t.ok === false ? ' (failed)' : '')) : (t.kind === 'user' ? 'you' : t.kind);
     const txt = document.createElement('div'); txt.className = 'txt'; txt.textContent = t.text || '';
-    d.appendChild(who); d.appendChild(txt); log.appendChild(d);
+    d.appendChild(who); d.appendChild(txt);
+    (t.images || []).forEach(n => {
+      const im = document.createElement('img'); im.className = 'pasted'; im.alt = n;
+      im.src = '/api/paste/' + encodeURIComponent(n) + '?token=' + encodeURIComponent(tok);
+      d.appendChild(im);
+    });
+    log.appendChild(d);
   });
   notices.forEach(n => {
     const d = document.createElement('div'); d.className = 'row kind-error';

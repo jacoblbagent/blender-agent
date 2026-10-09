@@ -124,6 +124,10 @@ def _draw_transcript(layout, wm, limit):
         if kind == "user":
             head = box.row()
             head.label(text="You", icon="USER")
+            count = int(meta.get("images") or 0)
+            if count:
+                head.label(text="%d photo%s" % (count, "" if count == 1 else "s"),
+                           icon="IMAGE_DATA")
             head.label(text=entry["time"])
         elif kind == "assistant":
             head = box.row()

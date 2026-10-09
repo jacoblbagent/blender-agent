@@ -12,6 +12,7 @@ Module layout:
     agent.py        agent loop, main-thread marshalling, session state
     ui.py           sidebar chat panel, operators, model picker
     workspace.py    one-click "Agent" workspace creation
+    attachments.py  photos pasted into the remote page, saved for the model's vision
 """
 
 bl_info = {
@@ -26,9 +27,11 @@ bl_info = {
 
 import importlib
 
-from . import preferences, openrouter, context, tools, agent, bridge, shots, ui, workspace
+from . import (preferences, openrouter, context, tools, agent, bridge, shots, ui, workspace,
+               attachments)
 
-_modules = (preferences, openrouter, context, tools, agent, bridge, shots, ui, workspace)
+_modules = (preferences, openrouter, context, tools, agent, bridge, shots, ui, workspace,
+            attachments)
 
 
 def register():

@@ -23,6 +23,7 @@ blender_agent/        the add-on (pure Python, no dependencies)
   ui.py               sidebar chat panel, model picker, operators
   preferences.py      API key, model, limits, system prompt
   workspace.py        one-click "Agent" workspace
+  attachments.py      photos pasted into the remote page, saved for the model's vision
 patches/              C/C++ source patches for the fork build
 tests/                headless end-to-end suite + a mock OpenRouter server
 tools/fork_blender.sh fork builder / dependency checker
@@ -171,10 +172,30 @@ phone or laptop while Blender keeps working on your desktop.
 
 What the page gives you: live status (Blender version, scene, object list with
 transforms, agent state), the running transcript, the model screenshot, a model
-dropdown built from the live catalogue, Send/Stop/Clear/Shot, and inline errors
-(e.g. an unset API key). The same thing is available as JSON: `GET /api/status`,
-`GET /api/models`, `GET /api/shot.png`, `POST /api/ask {prompt}`,
+dropdown built from the live catalogue, Send/Stop/Clear/Shot/Photo, and inline
+errors (e.g. an unset API key). The same thing is available as JSON:
+`GET /api/status`, `GET /api/models`, `GET /api/shot.png`,
+`GET /api/paste/<name>`, `POST /api/ask {prompt, images?}`,
 `POST /api/model {model}`, `POST /api/shot`, `POST /api/stop`, `POST /api/clear`.
+
+### Paste a photo as a reference
+
+Paste an image straight into the remote page (Ctrl/Cmd-V) — a screenshot, a
+product shot, a photo — and it goes to the model with your prompt, so a
+vision-capable model can model from it. **Photo** opens a file picker for phones
+and tablets. Thumbnails pile up above the message box; the **x** on a chip drops
+one. Send to attach them.
+
+- Pastes land in `CONFIG/blender_agent/pasted/` (the oldest are pruned past 60)
+  and are served back to the page as `GET /api/paste/<name>` so they stay visible
+  in the transcript.
+- Only image MIME types are accepted, capped at 8 MB decoded.
+- The model must accept image input: with a text-only model selected the page
+  says so instead of sending a request that fails — pick a vision model (the
+  catalogue's *Modalities* shows which ones qualify).
+- **Retry** re-sends the photo with the message; the picture is kept, not lost.
+- Photos are attached to the message only. They are *not* inserted into the scene
+  as reference objects, and the panel shows a `N photo(s)` marker on the turn.
 
 The token is pinned to `CONFIG/blender_agent/bridge_token` (mode 0600) when it is
 generated or rotated, and rotation applies to the running server immediately - the
@@ -194,10 +215,14 @@ Verified from a real browser routed through the tailnet (`socks5://localhost:105
 the page loads, renders live status (`idle | <model> | 5.2.2 LTS`), lists the scene
 objects and populates the model dropdown from the live catalogue.
 
+Verified in a real browser against a live bridge: a pasted image becomes a chip
+above the message box, Send stores it and the model receives it as a base64
+`image_url` part, and the transcript draws the photo back from `/api/paste/`.
+
 ## Tests
 
 ```bash
-./tests/run_tests.sh        # 101 checks, headless, against a local mock OpenRouter
+./tests/run_tests.sh        # 126 checks, headless, against a local mock OpenRouter
 ```
 
 The mock server (`tests/mock_openrouter.py`) speaks real SSE and tool-call
@@ -208,7 +233,10 @@ sent back), model screenshots (framing, no leftover camera, restored render
 settings and viewport colours), HTTP error surfacing, cancellation, message
 trimming, undo, and the remote bridge (token enforcement and pinning, remote ask
 → tool call → real object created, remote model switching, web page served, the
-screenshot endpoint's PNG and its 401 without a token).
+screenshot endpoint's PNG and its 401 without a token), and pasted photos
+(disk storage, MIME/size limits, traversal refusal, a photo reaching the model as
+a base64 image part, the text-only-model refusal, retry keeping the photo, and
+the `/api/paste/<name>` endpoint).
 
 GUI checks (run separately, needs a display): workspace creation, a live streamed
 agent turn, one-step undo of all agent-created objects, and screenshots of the UI.

@@ -4,6 +4,7 @@ Executed by: blender -b --python tests/test_agent.py
 Environment: MOCK_URL, MOCK_LOG, optional MOCK_PORT
 """
 
+import base64
 import json
 import os
 import sys
@@ -13,6 +14,10 @@ import bpy
 
 MOCK_URL = os.environ.get("MOCK_URL", "http://127.0.0.1:8899/v1")
 MOCK_LOG = os.environ.get("MOCK_LOG", "/tmp/blender_agent_mock.jsonl")
+
+# A real 4x4 PNG (red), used for the pasted-photo tests.
+TINY_PNG_B64 = ("iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR42mM4YWPzHxkzkC4AAME4I/GC6aLhAAAAAElFTkSuQmCC")
+TINY_PHOTO = "data:image/png;base64," + TINY_PNG_B64
 
 RESULTS = []
 
@@ -415,6 +420,23 @@ def main():
                     box["status"] = st
                     break
             time.sleep(0.3)
+        # A photo pasted from the page: refused while a text-only model is selected...
+        box["askimg_bad"] = post("/api/ask", {
+            "prompt": "Look at this.", "images": [{"name": "p.png", "data": TINY_PHOTO}]})
+        # ...and accepted once a vision model is selected.
+        post("/api/model", {"model": "mock/oracle-1"})
+        box["askimg"] = post("/api/ask", {
+            "prompt": "Here is a photo of a chair.", "images": [{"name": "chair.png",
+                                                                 "data": TINY_PHOTO}]})
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            code, raw = get("/api/status")
+            if code == 200:
+                st = json.loads(raw)
+                if not st.get("busy") and st.get("status") in ("done", "error"):
+                    box["status2"] = st
+                    break
+            time.sleep(0.3)
         box["stop"] = post("/api/stop", {})
         box["shot"] = post("/api/shot", {})
         box["shotpng"] = get_bytes("/api/shot.png")
@@ -482,6 +504,37 @@ def main():
     final = json.loads(box.get("hashes", (0, "{}"))[1] or "{}")
     check("status carries the screenshot", str((final.get("shot") or {}).get("name", "")
                                                ).endswith(".png"), final.get("shot"))
+
+    box_bad = box.get("askimg_bad", (0, {}))
+    check("a photo is refused for a text-only model", box_bad[0] == 409
+          and "vision" in (box_bad[1].get("error") or ""), box_bad)
+    box_img = box.get("askimg", (0, {}))
+    check("ask with a pasted photo accepted", box_img[0] == 200
+          and box_img[1].get("images") == 1, box_img)
+    st2 = box.get("status2") or {}
+    check("the photo turn completed", st2.get("status") == "done", st2.get("status"))
+    pasted = [t for t in (st2.get("transcript") or []) if t.get("images")]
+    check("the photo shows in the shared transcript", bool(pasted),
+          [t.get("kind") for t in (st2.get("transcript") or [])])
+    photo_msg = None
+    for req in mock_requests():
+        for m in req["payload"]["messages"]:
+            if m.get("role") == "user" and isinstance(m.get("content"), list) \
+                    and any(p.get("type") == "image_url" for p in m["content"]):
+                photo_msg = m
+    check("the photo reached the model as an image part", photo_msg is not None,
+          [p.get("type") for p in (photo_msg or {}).get("content", [])] or "no multimodal user message")
+    if photo_msg:
+        check("the pasted photo is a base64 data url",
+              any(p.get("image_url", {}).get("url", "").startswith("data:image/png;base64,")
+                  for p in photo_msg["content"]))
+    if pasted and pasted[0].get("images"):
+        code, body = get_bytes("/api/paste/" + pasted[0]["images"][0], token=fresh)
+        check("the stored photo is served back to the page", code == 200
+              and body[:8] == b"\x89PNG\r\n\x1a\n", (code, body[:8]))
+        check("a stored photo endpoint has no traversal",
+              get("/api/paste/../setup.json", token=fresh)[0] == 404)
+
     ok_s, msg_s = bridge.stop()
     check("bridge stops cleanly", ok_s and not bridge.is_running(), msg_s)
 
@@ -498,6 +551,68 @@ def main():
     check("trim bounded", len(trimmed) <= 12, len(trimmed))
     check("trim starts at a user turn",
           trimmed[1]["role"] == "user", [m["role"] for m in trimmed[:3]])
+    prefs.max_messages = 60
+
+    heading("12. pasted photos (vision)")
+    from blender_agent import attachments
+    check("pastes go to the configured directory",
+          attachments.directory() == os.environ.get("BLENDER_AGENT_PASTE_DIR"),
+          attachments.directory())
+    path, err = attachments.save_data_url("chair.png", TINY_PHOTO)
+    check("a pasted photo is saved to disk", bool(path) and os.path.exists(path), err)
+    if path:
+        with open(path, "rb") as fh:
+            check("the saved file is the decoded image", fh.read()[:8] == b"\x89PNG\r\n\x1a\n")
+    bad, bad_err = attachments.save_data_url("notes.txt", "data:text/plain;base64,aGk=")
+    check("a non-image paste is refused", bad is None and bool(bad_err), bad_err)
+    huge, huge_err = attachments.save_data_url(
+        "huge.png", "data:image/png;base64,"
+        + base64.b64encode(b"\0" * (attachments.MAX_BYTES + 16)).decode())
+    check("an oversized paste is refused", huge is None and bool(huge_err), huge_err)
+    check("a photo name cannot escape the paste directory",
+          attachments.resolve("../setup.json") is None and attachments.resolve("nope.png") is None)
+    part = openrouter.image_part(path) if path else None
+    check("the photo encodes as an image_url part",
+          bool(part) and part["image_url"]["url"].startswith("data:image/png;base64,"), part)
+
+    try:
+        prefs.model = "mock/scripter-2"
+    except TypeError:
+        prefs.model, prefs.model_custom = "custom", "mock/scripter-2"
+    agent.SESSION.clear()
+    refused = agent.SESSION.send("Look at this photo.", prefs, images=[path])
+    check("a photo is refused by a text-only model", not refused
+          and any(t["kind"] == "error" and "vision" in t["text"] for t in agent.SESSION.transcript),
+          [t["text"][:70] for t in agent.SESSION.transcript if t["kind"] == "error"])
+
+    prefs.model = "mock/oracle-1"
+    agent.SESSION.clear()
+    reset_log()
+    ok_photo = agent.SESSION.send("Model the chair in this photo.", prefs, images=[path])
+    check("send accepts a photo", ok_photo)
+    pump(60)
+    check("the photo turn finished", agent.SESSION.status == "done", agent.SESSION.status)
+    user_msg = next((m for m in agent.SESSION.messages if m["role"] == "user"), None)
+    check("the photo is attached to the user message",
+          bool(user_msg and isinstance(user_msg["content"], list)
+               and any(p.get("type") == "image_url" for p in user_msg["content"])),
+          [p.get("type") for p in (user_msg or {}).get("content", [])])
+    check("the transcript records the photo",
+          any(t["kind"] == "user" and t["meta"].get("images") == 1
+              for t in agent.SESSION.transcript))
+    sent = [m for m in (mock_requests()[0]["payload"]["messages"] if mock_requests() else [])
+            if m["role"] == "user"]
+    check("the photo was sent to the model",
+          bool(sent) and isinstance(sent[-1]["content"], list)
+          and any(p.get("type") == "image_url" for p in sent[-1]["content"]),
+          [p.get("type") for p in (sent[-1]["content"] if sent else [])])
+    agent.SESSION.retry_last(prefs)
+    check("retry keeps the attached photo",
+          bool(agent.SESSION.last_send and agent.SESSION.last_send.get("images")),
+          agent.SESSION.last_send)
+    agent.SESSION.cancel()
+    pump(20, until=lambda: not agent.SESSION.busy())
+    agent.SESSION.clear()
     prefs.max_messages = 60
 
     # ------------------------------------------------------------------ done
