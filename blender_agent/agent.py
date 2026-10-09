@@ -349,15 +349,23 @@ class Session:
         self.status_detail = ""
         self.error = ""
         self.last_step = 0
+        self.pending_approval = None
+        self.cancel_flag.clear()
+        self.abort_box["close"] = None
+
+    def _begin_fresh_chat(self, title=None):
+        """Open a brand-new empty conversation and make it the active one."""
+        chat = Chat(title=title or "")
+        self.chats.append(chat)
+        self._active_id = chat.id
+        self._reset_run_state()
+        return chat
 
     def new_chat(self, title=None):
         """Start a fresh, unrelated conversation. Returns the new Chat."""
         if self.busy():
             return None
-        chat = Chat(title=title or "")
-        self.chats.append(chat)
-        self._active_id = chat.id
-        self._reset_run_state()
+        chat = self._begin_fresh_chat(title=title)
         self._prune_chats()
         self.save()
         return chat
@@ -436,7 +444,14 @@ class Session:
         return True
 
     def load(self):
-        """Restore saved conversations. A corrupt/absent file is not an error."""
+        """Restore saved conversations into the list. A corrupt/absent file is
+        not an error.
+
+        A loaded session always opens a *fresh, empty* conversation: the saved
+        ones come back in the list and stay reachable from the menu, but none of
+        them is resumed, so starting the add-on never silently continues an
+        earlier chat.
+        """
         path = _chats_path()
         try:
             with open(path, encoding="utf-8") as fh:
@@ -456,8 +471,7 @@ class Session:
         if not chats:
             return False
         self.chats = chats
-        active = str(data.get("active") or "")
-        self._active_id = active if any(c.id == active for c in chats) else chats[-1].id
+        self._begin_fresh_chat()
         self._prune_chats()
         return True
 

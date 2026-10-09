@@ -671,6 +671,14 @@ def main():
     check("deleting is refused while the agent is busy", not sess.delete_chat())
     sess.thread = None
 
+    sess.pending_approval = {"tool": "x", "args": {}, "event": None, "approved": False}
+    sess.cancel_flag.set()
+    sess.status = "error"
+    sess.new_chat()
+    check("a new chat is an entirely fresh session (no leftover run state)",
+          sess.pending_approval is None and not sess.cancel_flag.is_set()
+          and sess.status == "idle" and not sess.messages and not sess.transcript)
+
     # ---- persistence ------------------------------------------------------
     sess.clear()
     sess.messages.append({"role": "user", "content": "persist me"})
@@ -685,13 +693,19 @@ def main():
         check("the saved chats are not world readable", chats_mode == "0o600", chats_mode)
     fresh = agent_mod.Session()
     check("a saved chat round-trips",
-          fresh.load() and len(fresh.chats) == 1 and fresh.active_chat.id == keep_id
-          and fresh.active_title() == "Saved chat",
+          fresh.load() and any(c.id == keep_id and c.title_text() == "Saved chat"
+                               for c in fresh.chats),
           [c.title_text() for c in fresh.chats])
-    check("the saved history came back",
-          bool(fresh.messages) and fresh.messages[0]["content"] == "persist me")
+    check("a loaded session opens a fresh, empty chat (nothing resumed)",
+          fresh.active_chat.is_empty() and fresh.active_chat.id != keep_id
+          and not fresh.messages and not fresh.transcript,
+          fresh.active_chat.id)
+    check("the saved chat keeps its own history",
+          any(c.id == keep_id and c.messages and c.messages[0]["content"] == "persist me"
+              for c in fresh.chats))
     check("a saved chat keeps its token usage",
-          isinstance(fresh.usage, dict) and "total_tokens" in fresh.usage)
+          any(c.id == keep_id and isinstance(c.usage, dict) and "total_tokens" in c.usage
+              for c in fresh.chats))
 
     sess.clear()
     sess.messages.append({"role": "user", "content": [

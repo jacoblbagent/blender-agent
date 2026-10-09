@@ -63,8 +63,11 @@ in the menu names it.
 - Switching, creating and deleting are refused while a turn is running — press
   **Stop** first, so a reply can never land in the wrong conversation.
 - Chats are saved next to `setup.json` in Blender's config dir (mode `0600`) and
-  reload when the add-on loads. Inline photo data is dropped from the saved
-  history (the photo files stay on disk, so **Retry** still resends them).
+  reload when the add-on loads. A loaded session always opens a **fresh, empty
+  chat** — your saved conversations come back in the menu but none is resumed, so
+  reopening Blender never continues an earlier chat by itself. Inline photo data
+  is dropped from the saved history (the photo files stay on disk, so **Retry**
+  still resends them).
 - The remote page has the same thing: a conversation dropdown plus **New** in its
   header, backed by `/api/new_chat` and `/api/open_chat`.
 
