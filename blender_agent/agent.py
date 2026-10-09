@@ -12,6 +12,7 @@ import queue
 import threading
 import time
 import traceback
+import uuid
 
 import bpy
 
@@ -19,6 +20,151 @@ from . import context as ctxmod
 from . import openrouter, shots, tools
 
 MAX_TRANSCRIPT = 400
+MAX_CHATS = 60
+
+
+def _now():
+    return time.time()
+
+
+class Chat:
+    """One independent conversation: its own payload history and transcript.
+
+    Everything that describes "a conversation" lives here, so the user can keep
+    several unrelated chats side by side and switch between them without one
+    leaking its context into another.
+    """
+
+    def __init__(self, chat_id=None, title=""):
+        self.id = chat_id or uuid.uuid4().hex[:12]
+        self.title = title or ""
+        self.created = _now()
+        self.updated = self.created
+        self.messages = []          # OpenRouter payload history
+        self.transcript = []        # what the panel shows
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+        self.last_send = None       # {"text", "images"} - so Retry keeps the photo
+
+    def title_text(self):
+        """The display name: an explicit title, else the first thing you asked."""
+        if self.title:
+            return self.title
+        first = next((t for t in self.transcript
+                      if t.get("kind") == "user" and (t.get("text") or "").strip()), None)
+        if first:
+            return first["text"].strip().splitlines()[0][:40]
+        return "New chat"
+
+    def summary(self, active=False):
+        return {"id": self.id, "title": self.title_text(), "messages": len(self.messages),
+                "active": bool(active), "created": self.created, "updated": self.updated}
+
+    def is_empty(self):
+        return not self.messages and not self.transcript
+
+    # ---------------------------------------------------------- persistence --
+    def to_dict(self):
+        last = self.last_send or {}
+        return {
+            "id": self.id,
+            "title": self.title,
+            "created": self.created,
+            "updated": self.updated,
+            "messages": _strip_images(self.messages),
+            "transcript": self.transcript[-MAX_TRANSCRIPT:],
+            "usage": self.usage,
+            "last_send": {"text": last.get("text") or "",
+                          "images": [p for p in (last.get("images") or [])
+                                     if isinstance(p, str) and os.path.exists(p)]},
+        }
+
+    @classmethod
+    def from_dict(cls, raw):
+        if not isinstance(raw, dict):
+            return None
+        chat = cls(chat_id=str(raw.get("id") or "") or None,
+                   title=str(raw.get("title") or ""))
+        try:
+            chat.created = float(raw.get("created") or chat.created)
+        except (TypeError, ValueError):
+            pass
+        try:
+            chat.updated = float(raw.get("updated") or chat.created)
+        except (TypeError, ValueError):
+            chat.updated = chat.created
+        chat.messages = [m for m in (raw.get("messages") or [])
+                         if isinstance(m, dict) and m.get("role")]
+        transcript = []
+        for entry in raw.get("transcript") or []:
+            if not isinstance(entry, dict) or not entry.get("kind"):
+                continue
+            meta = entry.get("meta") if isinstance(entry.get("meta"), dict) else {}
+            transcript.append({"kind": str(entry["kind"]), "text": str(entry.get("text") or ""),
+                               "time": str(entry.get("time") or ""), "meta": meta})
+        chat.transcript = transcript[-MAX_TRANSCRIPT:]
+        usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+        for key in chat.usage:
+            try:
+                chat.usage[key] = int(usage.get(key) or 0)
+            except (TypeError, ValueError):
+                pass
+        last = raw.get("last_send") if isinstance(raw.get("last_send"), dict) else {}
+        images = [p for p in (last.get("images") or [])
+                  if isinstance(p, str) and os.path.exists(p)]
+        if (last.get("text") or "").strip() or images:
+            chat.last_send = {"text": str(last.get("text") or ""), "images": images}
+        return chat
+
+
+def _strip_images(messages):
+    """Payload history without inline image data, so saved chats stay small.
+
+    The photo files themselves live on disk and are still referenced by
+    ``last_send``, so Retry can resend them; only the base64 blobs are dropped.
+    """
+    out = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        copy = dict(msg)
+        content = msg.get("content")
+        if isinstance(content, list):
+            parts, dropped = [], 0
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    dropped += 1
+                    continue
+                parts.append(part)
+            if dropped:
+                parts.append({"type": "text",
+                              "text": "(%d photo%s omitted from saved history)"
+                                      % (dropped, "" if dropped == 1 else "s")})
+            copy["content"] = parts
+        out.append(copy)
+    return out
+
+
+def _chats_path():
+    """Where saved conversations live (honours the test overrides)."""
+    try:
+        from . import preferences as prefs_mod
+        return prefs_mod.chats_path()
+    except Exception:  # noqa: BLE001 - persistence must never be fatal
+        return ""
+
+
+def load_chats():
+    try:
+        return SESSION.load()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def save_chats():
+    try:
+        return SESSION.save()
+    except Exception:  # noqa: BLE001
+        return False
 
 # ------------------------------------------------------- main-thread bridge --
 
@@ -126,30 +272,204 @@ def images_supported(prefs):
 
 
 class Session:
-    """Live agent conversation. Single instance, module-level (SESSION)."""
+    """Live agent session: the set of conversations plus the running turn.
+
+    A conversation's data lives in a :class:`Chat`; the run state (worker
+    thread, status, cancel flag, pending approval) is session-wide because only
+    one turn can be in flight at a time. ``messages`` / ``transcript`` / ``usage``
+    / ``last_send`` are properties that proxy to the *active* chat, so every
+    existing caller keeps working unchanged.
+    """
 
     def __init__(self):
-        self.messages = []          # OpenRouter payload history
-        self.transcript = []        # what the panel shows
+        self.chats = [Chat()]
+        self._active_id = self.chats[0].id
         self.thread = None
         self.cancel_flag = threading.Event()
         self.status = "idle"        # idle | thinking | tools | done | error | cancelled
         self.status_detail = ""
         self.error = ""
-        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
         self.last_step = 0
-        self.last_send = None          # {"text", "images"} - so Retry keeps the photo
         self.pending_approval = None   # {"tool":..,"args":..,"event":Event,"approved":bool}
         self.abort_box = {"close": None}   # live HTTP response, so Stop is instant
         self._lock = threading.RLock()
 
+    # ------------------------------------------------------------ active chat --
+    @property
+    def active_chat(self):
+        for chat in self.chats:
+            if chat.id == self._active_id:
+                return chat
+        if not self.chats:
+            self.chats.append(Chat())
+        self._active_id = self.chats[0].id
+        return self.chats[0]
+
+    @property
+    def messages(self):
+        return self.active_chat.messages
+
+    @messages.setter
+    def messages(self, value):
+        self.active_chat.messages = value
+
+    @property
+    def transcript(self):
+        return self.active_chat.transcript
+
+    @transcript.setter
+    def transcript(self, value):
+        self.active_chat.transcript = value
+
+    @property
+    def usage(self):
+        return self.active_chat.usage
+
+    @usage.setter
+    def usage(self, value):
+        self.active_chat.usage = value
+
+    @property
+    def last_send(self):
+        return self.active_chat.last_send
+
+    @last_send.setter
+    def last_send(self, value):
+        self.active_chat.last_send = value
+
+    def chat_list(self):
+        return [c.summary(active=(c.id == self._active_id)) for c in self.chats]
+
+    def active_title(self):
+        return self.active_chat.title_text()
+
+    # ------------------------------------------------------- chat management --
+    def _reset_run_state(self):
+        self.status = "idle"
+        self.status_detail = ""
+        self.error = ""
+        self.last_step = 0
+
+    def new_chat(self, title=None):
+        """Start a fresh, unrelated conversation. Returns the new Chat."""
+        if self.busy():
+            return None
+        chat = Chat(title=title or "")
+        self.chats.append(chat)
+        self._active_id = chat.id
+        self._reset_run_state()
+        self._prune_chats()
+        self.save()
+        return chat
+
+    def switch_chat(self, chat_id):
+        if self.busy() or not any(c.id == chat_id for c in self.chats):
+            return False
+        self._active_id = chat_id
+        self._reset_run_state()
+        self.save()
+        return True
+
+    def rename_chat(self, title, chat_id=None):
+        title = (title or "").strip()
+        if not title:
+            return False
+        target = chat_id or self._active_id
+        for chat in self.chats:
+            if chat.id == target:
+                chat.title = title[:60]
+                chat.updated = _now()
+                self.save()
+                return True
+        return False
+
+    def delete_chat(self, chat_id=None):
+        """Delete a conversation; the only remaining chat is emptied, not removed."""
+        if self.busy():
+            return False
+        target = chat_id or self._active_id
+        if not any(c.id == target for c in self.chats):
+            return False
+        if len(self.chats) == 1:
+            self.clear()
+            return True
+        index = next(i for i, c in enumerate(self.chats) if c.id == target)
+        del self.chats[index]
+        if target == self._active_id:
+            self._active_id = self.chats[min(index, len(self.chats) - 1)].id
+            self._reset_run_state()
+        self.save()
+        return True
+
+    def _prune_chats(self):
+        """Bound growth: drop the oldest empty chats first, never the active one."""
+        if len(self.chats) <= MAX_CHATS:
+            return
+        active = self.active_chat
+        others = [c for c in self.chats if c is not active]
+        others.sort(key=lambda c: (not c.is_empty(), c.updated))
+        drop = {id(c) for c in others[: len(self.chats) - MAX_CHATS]}
+        self.chats = [c for c in self.chats if id(c) not in drop]
+
+    # ----------------------------------------------------------- persistence --
+    def to_dict(self):
+        return {"version": 1, "active": self._active_id,
+                "chats": [c.to_dict() for c in self.chats if not c.is_empty()]}
+
+    def save(self):
+        """Persist every non-empty conversation to the config dir, 0600."""
+        path = _chats_path()
+        if not path:
+            return False
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            tmp = path + ".tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(self.to_dict(), fh)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+        except (OSError, TypeError, ValueError):
+            return False
+        return True
+
+    def load(self):
+        """Restore saved conversations. A corrupt/absent file is not an error."""
+        path = _chats_path()
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        chats = []
+        for raw in data.get("chats") or []:
+            try:
+                chat = Chat.from_dict(raw)
+            except Exception:  # noqa: BLE001 - skip one bad chat, keep the rest
+                chat = None
+            if chat is not None:
+                chats.append(chat)
+        if not chats:
+            return False
+        self.chats = chats
+        active = str(data.get("active") or "")
+        self._active_id = active if any(c.id == active for c in chats) else chats[-1].id
+        self._prune_chats()
+        return True
+
     # ---------------------------------------------------------- transcript --
     def record(self, kind, text, **meta):
         entry = {"kind": kind, "text": text or "", "time": _stamp(), "meta": meta}
+        chat = self.active_chat
         with self._lock:
-            self.transcript.append(entry)
-            if len(self.transcript) > MAX_TRANSCRIPT:
-                del self.transcript[: len(self.transcript) - MAX_TRANSCRIPT]
+            chat.transcript.append(entry)
+            if len(chat.transcript) > MAX_TRANSCRIPT:
+                del chat.transcript[: len(chat.transcript) - MAX_TRANSCRIPT]
+            chat.updated = _now()
         if _redraw_cb is not None:
             try:
                 _redraw_cb()
@@ -180,13 +500,17 @@ class Session:
                 pass
 
     def clear(self):
+        """Empty the active conversation (the chat itself stays in the list)."""
+        chat = self.active_chat
         with self._lock:
-            self.messages = []
-            self.transcript = []
-        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+            chat.messages = []
+            chat.transcript = []
+        chat.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+        chat.last_send = None
+        chat.updated = _now()
         self.error = ""
-        self.last_send = None
         self.set_status("idle")
+        self.save()
 
     def resolve_approval(self, approved):
         pending = self.pending_approval
@@ -326,6 +650,9 @@ class Session:
             self.error = traceback.format_exc(limit=6)
             self.record("error", self.error)
             self.set_status("error")
+        finally:
+            # Keep the saved conversation current after every turn.
+            self.save()
 
     def _one_turn(self, prefs, payload):
         """Stream one assistant turn. Returns (content, tool_calls, finish)."""
@@ -363,16 +690,18 @@ class Session:
         return final, tool_calls, finish
 
     def _stream_into_transcript(self, text, final=False):
+        chat = self.active_chat
         with self._lock:
-            for entry in reversed(self.transcript):
+            for entry in reversed(chat.transcript):
                 if entry["kind"] == "assistant" and entry["meta"].get("streaming"):
                     entry["text"] = text
                     if final:
                         entry["meta"]["streaming"] = False
                     break
             else:
-                self.transcript.append({"kind": "assistant", "text": text, "time": _stamp(),
+                chat.transcript.append({"kind": "assistant", "text": text, "time": _stamp(),
                                         "meta": {"streaming": not final}})
+            chat.updated = _now()
         if _redraw_cb is not None:
             try:
                 _redraw_cb()

@@ -40,12 +40,17 @@ def register():
     for mod in _modules:
         if hasattr(mod, "register"):
             mod.register()
+    agent.load_chats()
     agent.register_timer()
     ui.register_handlers()
 
 
 def unregister():
     ui.unregister_handlers()
+    try:
+        agent.save_chats()
+    except Exception:  # noqa: BLE001 - never block shutdown on persistence
+        pass
     try:
         bridge.stop()
     except Exception:  # noqa: BLE001

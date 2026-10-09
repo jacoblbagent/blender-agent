@@ -265,6 +265,8 @@ def _state():
             "key_set": bool(prefs and (prefs.api_key or "").strip()),
             "usage": sess.usage,
             "pending_approval": bool(sess.pending_approval),
+            "chat": sess.active_title(),
+            "chats": sess.chat_list(),
             "shot": {"name": shot.get("name"), "label": shot.get("label"),
                      "objects": shot.get("objects"), "time": shot.get("time"),
                      "size": shot.get("size")} if shot else None,
@@ -380,10 +382,11 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         if path == "/api/ask":
             prompt = (body.get("prompt") or "").strip()
             images, errors = attachments.save_many(body.get("images") or [])
+            if errors and not images:
+                # Nothing usable came through - say why, don't blame a missing prompt.
+                return _json_response(self, 400, {"error": "; ".join(errors)})
             if not prompt and not images:
                 return _json_response(self, 400, {"error": "prompt or a pasted photo required"})
-            if errors and not images:
-                return _json_response(self, 400, {"error": "; ".join(errors)})
             if not (prefs.api_key or "").strip():
                 return _json_response(self, 409, {"error": "no OpenRouter API key set in Blender"})
             if images:
@@ -404,6 +407,20 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         if path == "/api/clear":
             agent.run_on_main(agent.SESSION.clear, timeout=30)
             return _json_response(self, 200, {"ok": True})
+        if path == "/api/new_chat":
+            chat = agent.run_on_main(agent.SESSION.new_chat, timeout=30)
+            if chat is None:
+                return _json_response(self, 409, {"error": "the agent is busy - stop it first"})
+            return _json_response(self, 200, {"ok": True, "chat": agent.SESSION.active_title()})
+        if path == "/api/open_chat":
+            chat_id = (body.get("id") or "").strip()
+            if not chat_id:
+                return _json_response(self, 400, {"error": "id required"})
+            ok_chat = agent.run_on_main(
+                lambda: agent.SESSION.switch_chat(chat_id), timeout=30)
+            return _json_response(self, 200 if ok_chat else 409,
+                                  {"ok": bool(ok_chat), "chat": agent.SESSION.active_title(),
+                                   "error": None if ok_chat else "unknown chat or the agent is busy"})
         if path == "/api/model":
             model = (body.get("model") or "").strip()
             if not model:
@@ -454,6 +471,7 @@ button:disabled{opacity:.45}
 footer{border-top:1px solid var(--line);background:var(--panel);padding:10px 12px;display:flex;gap:8px;flex-wrap:wrap;flex:none}
 #p{flex:1;min-width:0;background:#0f1012;color:var(--fg);border:1px solid var(--line);padding:10px 12px}
 #model{flex:0 1 42%;min-width:0;background:#23262a;color:var(--fg);border:1px solid var(--line);padding:8px 10px}
+#chats{max-width:34%;min-width:0;background:#23262a;color:var(--fg);border:1px solid var(--line);padding:8px 10px}
 #token{width:100%;background:#0f1012;color:var(--fg);border:1px solid var(--line);padding:10px 12px}
 #gate{display:none;padding:14px 12px;gap:8px;flex-direction:column;border-bottom:1px solid var(--line)}
 #gate.show{display:flex}
@@ -483,7 +501,9 @@ img.pasted{display:block;margin-top:6px;max-width:100%;max-height:220px;border:1
     <div id="title">Blender Agent</div>
     <div id="meta">connecting&hellip;</div>
   </div>
-  <button id="clear" title="Clear conversation">Clear</button>
+  <select id="chats" title="Conversation"></select>
+  <button id="newchat" title="Start a new, unrelated chat">New</button>
+  <button id="clear" title="Clear this conversation">Clear</button>
   <button id="stop" title="Stop the agent">Stop</button>
 </header>
 <div id="gate">
@@ -524,6 +544,9 @@ $('send').onclick = send;
 $('p').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
 $('stop').onclick = () => api('/api/stop', {method:'POST'});
 $('clear').onclick = () => api('/api/clear', {method:'POST'}).then(tick);
+$('newchat').onclick = () => api('/api/new_chat', {method:'POST'}).then(tick);
+$('chats').onchange = () => api('/api/open_chat', {method:'POST', headers:{'Content-Type':'application/json'},
+  body: JSON.stringify({id: $('chats').value})}).then(tick);
 $('snap').onclick = () => api('/api/shot', {method:'POST'}).then(tick);
 // ---- pasted photos: a reference for the agent's eyes ----------------------
 let pending = [];   // [{name, data}] waiting to be sent with the next message
@@ -609,6 +632,17 @@ async function tick(){
   const s = await r.json();
   const dot = $('dot'); dot.className = 'dot ' + (s.busy ? 'busy' : (s.status==='error'?'error':(s.status==='done'?'done':'')));
   $('meta').textContent = `${s.status}${s.detail?' - '+s.detail:''} | ${s.model||'no model'} | ${s.blender} | ${s.file}`;
+  if (s.chat) $('title').textContent = s.chat;
+  const cs = $('chats');
+  const list = s.chats || [];
+  const sig = list.map(c => c.id + '~' + c.title + '~' + c.messages + '~' + (c.active ? 1 : 0)).join('|');
+  if (cs.dataset.sig !== sig) {
+    cs.dataset.sig = sig;
+    cs.innerHTML = '';
+    list.forEach(c => { const o = document.createElement('option'); o.value = c.id;
+      o.textContent = c.title; cs.appendChild(o); });
+    const act = list.find(c => c.active); if (act) cs.value = act.id;
+  }
   $('objs').textContent = 'scene ' + s.scene + ': ' + (s.objects||[]).length + ' objects\n' + (s.objects||[]).join('\n');
   const setup = $('setup');
   const missing = [];

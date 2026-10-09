@@ -52,6 +52,22 @@ one-box quick ask, *Object → Send Selection To Blender Agent* puts the selecti
 details into the prompt, and **Add Agent Workspace** builds a workspace tuned for
 talking to the agent (sidebar open, material shading).
 
+### Separate conversations
+
+The panel keeps a list of **independent chats**, so a new subject never drags the
+old one's context along. The row above Send shows the current chat; click it to
+switch, `+` starts a fresh one, the bin deletes the active one, and **Rename Chat**
+in the menu names it.
+
+- A chat is named after the first thing you asked it (or whatever you rename it to).
+- Switching, creating and deleting are refused while a turn is running — press
+  **Stop** first, so a reply can never land in the wrong conversation.
+- Chats are saved next to `setup.json` in Blender's config dir (mode `0600`) and
+  reload when the add-on loads. Inline photo data is dropped from the saved
+  history (the photo files stay on disk, so **Retry** still resends them).
+- The remote page has the same thing: a conversation dropdown plus **New** in its
+  header, backed by `/api/new_chat` and `/api/open_chat`.
+
 ## What the agent can do
 
 35 tools, all of them executing on Blender's main thread:
@@ -222,7 +238,7 @@ above the message box, Send stores it and the model receives it as a base64
 ## Tests
 
 ```bash
-./tests/run_tests.sh        # 126 checks, headless, against a local mock OpenRouter
+./tests/run_tests.sh        # 158 checks, headless, against a local mock OpenRouter
 ```
 
 The mock server (`tests/mock_openrouter.py`) speaks real SSE and tool-call
@@ -236,7 +252,9 @@ trimming, undo, and the remote bridge (token enforcement and pinning, remote ask
 screenshot endpoint's PNG and its 401 without a token), and pasted photos
 (disk storage, MIME/size limits, traversal refusal, a photo reaching the model as
 a base64 image part, the text-only-model refusal, retry keeping the photo, and
-the `/api/paste/<name>` endpoint).
+the `/api/paste/<name>` endpoint), and multiple independent chats (create, switch,
+rename and delete, per-chat transcript/history isolation, the busy guard, and the
+on-disk save/load round-trip including the corrupt-file case).
 
 GUI checks (run separately, needs a display): workspace creation, a live streamed
 agent turn, one-step undo of all agent-created objects, and screenshots of the UI.

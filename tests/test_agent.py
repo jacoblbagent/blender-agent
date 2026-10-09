@@ -615,6 +615,105 @@ def main():
     agent.SESSION.clear()
     prefs.max_messages = 60
 
+    heading("13. multiple unrelated chats")
+    check("operator new_chat", hasattr(bpy.ops.blender_agent, "new_chat"))
+    check("operator open_chat", hasattr(bpy.ops.blender_agent, "open_chat"))
+    check("operator rename_chat", hasattr(bpy.ops.blender_agent, "rename_chat"))
+    check("operator delete_chat", hasattr(bpy.ops.blender_agent, "delete_chat"))
+    check("the chats menu is registered", hasattr(bpy.types, "BLENDER_AGENT_MT_chats"))
+    from blender_agent import agent as agent_mod
+    sess = agent_mod.SESSION
+    sess.clear()
+    first_id = sess.active_chat.id
+    sess.messages.append({"role": "user", "content": "make a red cube"})
+    sess.record("user", "make a red cube")
+    check("a chat is titled after the first prompt",
+          sess.active_title() == "make a red cube", sess.active_title())
+
+    second = sess.new_chat()
+    check("new_chat returns a fresh conversation", second is not None and second.id != first_id)
+    check("the new chat starts empty", not sess.messages and not sess.transcript)
+    check("the new chat becomes active", sess.active_chat.id == second.id)
+    check("both chats are listed", len(sess.chat_list()) == 2, sess.chat_list())
+
+    sess.record("user", "make a green sphere")
+    check("the new chat has its own transcript",
+          len(sess.transcript) == 1 and sess.transcript[0]["text"] == "make a green sphere")
+    check("the first chat kept its own transcript",
+          any(c.id == first_id and len(c.transcript) == 1 for c in sess.chats))
+
+    check("switching back works", sess.switch_chat(first_id)
+          and sess.active_chat.id == first_id)
+    check("the first chat's transcript came back",
+          bool(sess.transcript) and sess.transcript[0]["text"] == "make a red cube")
+    check("the first chat's history came back",
+          bool(sess.messages) and sess.messages[0]["content"] == "make a red cube")
+    check("an unknown chat cannot be opened", not sess.switch_chat("does-not-exist"))
+
+    check("renaming works", sess.rename_chat("Cube work") and sess.active_title() == "Cube work")
+    check("an empty rename is refused", not sess.rename_chat("   "))
+
+    check("delete removes the chat and picks a neighbour",
+          sess.delete_chat() and len(sess.chats) == 1 and sess.active_chat.id == second.id,
+          [c.id for c in sess.chats])
+    sess.delete_chat()
+    check("deleting the last chat empties it instead of removing it",
+          len(sess.chats) == 1 and not sess.chats[0].messages and not sess.chats[0].transcript)
+
+    class _BusyThread:
+        def is_alive(self):
+            return True
+
+    sess.thread = _BusyThread()
+    check("a new chat is refused while the agent is busy", sess.new_chat() is None)
+    check("switching is refused while the agent is busy",
+          not sess.switch_chat(sess.chats[0].id))
+    check("deleting is refused while the agent is busy", not sess.delete_chat())
+    sess.thread = None
+
+    # ---- persistence ------------------------------------------------------
+    sess.clear()
+    sess.messages.append({"role": "user", "content": "persist me"})
+    sess.record("user", "persist me")
+    sess.rename_chat("Saved chat")
+    keep_id = sess.active_chat.id
+    saved_ok = sess.save()
+    check("chats are written to disk", saved_ok and os.path.exists(prefs_mod.chats_path()),
+          prefs_mod.chats_path())
+    if os.path.exists(prefs_mod.chats_path()):
+        chats_mode = oct(os.stat(prefs_mod.chats_path()).st_mode & 0o777)
+        check("the saved chats are not world readable", chats_mode == "0o600", chats_mode)
+    fresh = agent_mod.Session()
+    check("a saved chat round-trips",
+          fresh.load() and len(fresh.chats) == 1 and fresh.active_chat.id == keep_id
+          and fresh.active_title() == "Saved chat",
+          [c.title_text() for c in fresh.chats])
+    check("the saved history came back",
+          bool(fresh.messages) and fresh.messages[0]["content"] == "persist me")
+    check("a saved chat keeps its token usage",
+          isinstance(fresh.usage, dict) and "total_tokens" in fresh.usage)
+
+    sess.clear()
+    sess.messages.append({"role": "user", "content": [
+        {"type": "text", "text": "look at this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}]})
+    check("saved chats carry no inline image data",
+          "base64" not in json.dumps(sess.to_dict()))
+
+    with open(prefs_mod.chats_path(), "w") as fh:
+        fh.write("{ not json at all")
+    broken = agent_mod.Session()
+    check("a corrupt chat file is ignored, not fatal",
+          broken.load() is False and len(broken.chats) == 1)
+
+    from blender_agent import bridge as bridge_mod
+    state = bridge_mod._state()
+    check("the bridge exposes the chat list",
+          isinstance(state.get("chats"), list) and bool(state.get("chat")), state.get("chat"))
+    check("the remote page offers a new-chat control",
+          'id="newchat"' in bridge_mod.PAGE and "/api/new_chat" in bridge_mod.PAGE)
+    sess.clear()
+
     # ------------------------------------------------------------------ done
     passed = sum(1 for _, ok, _ in RESULTS if ok)
     print("\n%s" % ("=" * 62))

@@ -8,7 +8,7 @@ import webbrowser
 
 import bpy
 from bpy.props import BoolProperty, StringProperty
-from bpy.types import Operator, Panel
+from bpy.types import Menu, Operator, Panel
 
 from . import agent, openrouter, preferences, workspace
 from .agent import SESSION
@@ -205,6 +205,11 @@ def _draw_panel(layout, context, transcript_limit=None):
     model_row.label(text="key %s" % ("set" if (prefs.api_key or "").strip() else "missing"),
                     icon="CHECKMARK" if (prefs.api_key or "").strip() else "ERROR")
 
+    chat_row = layout.row(align=True)
+    chat_row.menu("BLENDER_AGENT_MT_chats", text=SESSION.active_title(), icon="DOWNARROW_HLT")
+    chat_row.operator("blender_agent.new_chat", text="", icon="ADD")
+    chat_row.operator("blender_agent.delete_chat", text="", icon="TRASH")
+
     row = layout.row(align=True)
     row.scale_y = 1.5
     if SESSION.busy():
@@ -367,7 +372,7 @@ class BLENDER_AGENT_OT_stop(Operator):
 
 class BLENDER_AGENT_OT_clear(Operator):
     bl_idname = "blender_agent.clear_history"
-    bl_label = "Clear Conversation"
+    bl_label = "Clear This Chat"
 
     def execute(self, context):
         if SESSION.busy():
@@ -375,6 +380,104 @@ class BLENDER_AGENT_OT_clear(Operator):
         SESSION.clear()
         redraw_all(force=True)
         return {"FINISHED"}
+
+
+class BLENDER_AGENT_OT_new_chat(Operator):
+    bl_idname = "blender_agent.new_chat"
+    bl_label = "New Chat"
+    bl_description = ("Start a fresh conversation that shares no context with the "
+                      "current one")
+
+    def execute(self, context):
+        if SESSION.busy():
+            self.report({"ERROR"}, "Stop the agent before starting a new chat")
+            return {"CANCELLED"}
+        chat = SESSION.new_chat()
+        redraw_all(force=True)
+        self.report({"INFO"}, "New chat started (%d open)" % len(SESSION.chats))
+        return {"FINISHED"} if chat else {"CANCELLED"}
+
+
+class BLENDER_AGENT_OT_open_chat(Operator):
+    bl_idname = "blender_agent.open_chat"
+    bl_label = "Open Chat"
+    bl_description = "Switch to another conversation"
+
+    chat_id: StringProperty()
+
+    def execute(self, context):
+        if SESSION.busy():
+            self.report({"ERROR"}, "Stop the agent before switching chats")
+            return {"CANCELLED"}
+        if not SESSION.switch_chat(self.chat_id):
+            self.report({"ERROR"}, "That chat no longer exists")
+            return {"CANCELLED"}
+        redraw_all(force=True)
+        self.report({"INFO"}, "Chat: %s" % SESSION.active_title())
+        return {"FINISHED"}
+
+
+class BLENDER_AGENT_OT_rename_chat(Operator):
+    bl_idname = "blender_agent.rename_chat"
+    bl_label = "Rename Chat"
+    bl_description = "Give this conversation a name"
+
+    title: StringProperty(name="Name", default="")
+
+    def invoke(self, context, event):
+        self.title = SESSION.active_title()
+        return context.window_manager.invoke_props_dialog(self, width=420)
+
+    def draw(self, context):
+        self.layout.prop(self, "title", text="Name")
+
+    def execute(self, context):
+        if not SESSION.rename_chat(self.title):
+            self.report({"ERROR"}, "Give the chat a name")
+            return {"CANCELLED"}
+        redraw_all(force=True)
+        self.report({"INFO"}, "Renamed to %s" % SESSION.active_title())
+        return {"FINISHED"}
+
+
+class BLENDER_AGENT_OT_delete_chat(Operator):
+    bl_idname = "blender_agent.delete_chat"
+    bl_label = "Delete Chat"
+    bl_description = ("Delete this conversation (the last remaining chat is emptied, "
+                      "not removed)")
+
+    def execute(self, context):
+        if SESSION.busy():
+            self.report({"ERROR"}, "Stop the agent before deleting a chat")
+            return {"CANCELLED"}
+        if not SESSION.delete_chat():
+            self.report({"ERROR"}, "Could not delete that chat")
+            return {"CANCELLED"}
+        redraw_all(force=True)
+        self.report({"INFO"}, "Deleted - now on %s" % SESSION.active_title())
+        return {"FINISHED"}
+
+
+class BLENDER_AGENT_MT_chats(Menu):
+    bl_idname = "BLENDER_AGENT_MT_chats"
+    bl_label = "Chats"
+
+    def draw(self, context):
+        layout = self.layout
+        chats = SESSION.chat_list()
+        if not chats:
+            layout.label(text="No chats yet", icon="INFO")
+        for chat in reversed(chats):          # newest first
+            label = chat["title"]
+            if chat["messages"]:
+                label = "%s  (%d)" % (label, chat["messages"])
+            op = layout.operator("blender_agent.open_chat", text=label,
+                                 icon="CHECKMARK" if chat["active"] else "BLANK1")
+            op.chat_id = chat["id"]
+        layout.separator()
+        layout.operator("blender_agent.new_chat", icon="ADD")
+        layout.operator("blender_agent.rename_chat", icon="TEXT")
+        layout.operator("blender_agent.delete_chat", icon="TRASH")
 
 
 class BLENDER_AGENT_OT_undo_last(Operator):
@@ -667,7 +770,10 @@ class BLENDER_AGENT_OT_send_selection(Operator):
 classes = (
     BLENDER_AGENT_PT_agent, BLENDER_AGENT_PT_model, BLENDER_AGENT_PT_tools,
     BLENDER_AGENT_PT_settings,
+    BLENDER_AGENT_MT_chats,
     BLENDER_AGENT_OT_send, BLENDER_AGENT_OT_stop, BLENDER_AGENT_OT_clear,
+    BLENDER_AGENT_OT_new_chat, BLENDER_AGENT_OT_open_chat, BLENDER_AGENT_OT_rename_chat,
+    BLENDER_AGENT_OT_delete_chat,
     BLENDER_AGENT_OT_undo_last, BLENDER_AGENT_OT_approve, BLENDER_AGENT_OT_deny,
     BLENDER_AGENT_OT_refresh_models, BLENDER_AGENT_OT_test_connection,
     BLENDER_AGENT_OT_open_key_page, BLENDER_AGENT_OT_model_browser,

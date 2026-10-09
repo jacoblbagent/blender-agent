@@ -20,6 +20,7 @@ from . import openrouter
 # disappeared and "nothing sends" until they were re-entered. The key is read back
 # from here (or from $OPENROUTER_API_KEY) when the preference is empty.
 SETUP_FILE_ENV = "BLENDER_AGENT_SETUP_FILE"
+CHATS_FILE_ENV = "BLENDER_AGENT_CHATS_FILE"
 KEY_ENV = "OPENROUTER_API_KEY"
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -233,6 +234,7 @@ class BlenderAgentPreferences(bpy.types.AddonPreferences):
 
         row = col.row(align=True)
         row.operator("blender_agent.add_workspace", icon="WORKSPACE")
+        row.operator("blender_agent.new_chat", text="New Chat", icon="ADD")
         row.operator("blender_agent.clear_history", icon="TRASH")
 
 
@@ -250,6 +252,22 @@ def _setup_path():
     # user_resource(create=True) makes a *directory*; join the file name onto it.
     base = bpy.utils.user_resource("CONFIG", path="blender_agent", create=True)
     return os.path.join(base, "setup.json")
+
+
+def chats_path():
+    """Where saved conversations live.
+
+    Sits beside setup.json, and honours the same test overrides so a test run
+    never touches the user's real config directory.
+    """
+    override = os.environ.get(CHATS_FILE_ENV)
+    if override:
+        return override
+    setup = os.environ.get(SETUP_FILE_ENV)
+    if setup:
+        return os.path.join(os.path.dirname(setup), "chats.json")
+    base = bpy.utils.user_resource("CONFIG", path="blender_agent", create=True)
+    return os.path.join(base, "chats.json")
 
 
 def _read_setup():
